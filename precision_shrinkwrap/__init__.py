@@ -12,9 +12,14 @@ bl_info = {
 }
 
 if "bpy" in locals():
+    # Re-enabling after an update: reload the submodules that were already
+    # loaded. Modules added by the update are not loaded yet, so skip them
+    # (the imports below load them fresh).
     import importlib
-    for _m in (solver, mesh_utils, fitting, rough_cage, properties, operators, ui, translations):  # noqa: F821
-        importlib.reload(_m)
+    for _name in ("solver", "mesh_utils", "fitting", "rough_cage", "properties", "operators", "ui",
+                  "translations"):
+        if _name in globals():
+            importlib.reload(globals()[_name])
 
 import bpy
 
