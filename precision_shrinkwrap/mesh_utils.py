@@ -62,7 +62,7 @@ def mesh_topology(me):
     loop_edges = np.empty(len(me.loops), dtype=np.int64)
     me.loops.foreach_get("edge_index", loop_edges)
     count = np.bincount(loop_edges, minlength=len(me.edges))
-    return solver.Topology(n, edges.reshape(-1, 2), count, mesh_triangles(me))
+    return solver.Topology(n, edges.reshape(-1, 2), count)
 
 
 def to_world(P, mat):
@@ -142,10 +142,9 @@ FACE_ID_ATTR = "_psw_body_face"
 
 
 def body_face_surface(context, body):
-    """The evaluated (rest pose) body as a Surface, plus per triangle: a key
-    ``face * 8 + mirror copy`` (which body cage face it comes from and which
-    mirror copy it is on), its world centre, unit normal and area; and the
-    evaluated area of every key."""
+    """The evaluated (rest pose) body as a Surface, plus for every triangle the
+    body cage face it comes from and which mirror copy it is on, and the
+    evaluated area of every (face, copy)."""
     me = body.data
     n_faces = len(me.polygons)
     a = me.attributes.new(FACE_ID_ATTR, "INT", "FACE")
@@ -185,13 +184,10 @@ def body_face_surface(context, body):
             side = 1.0 if cage[:, ax].mean() >= 0 else -1.0
             tri_side |= (center[:, ax] * side < 0).astype(np.int64) << k
     P = to_world(local, body.matrix_world)
-    cross = np.cross(P[tris[:, 1]] - P[tris[:, 0]], P[tris[:, 2]] - P[tris[:, 0]])
-    length = np.linalg.norm(cross, axis=1)
-    area = 0.5 * length
-    normal = cross / np.maximum(length, 1e-30)[:, None]
+    area = 0.5 * np.linalg.norm(np.cross(P[tris[:, 1]] - P[tris[:, 0]], P[tris[:, 2]] - P[tris[:, 0]]), axis=1)
     key = tri_face * 8 + tri_side
     key_area = np.bincount(key, weights=area, minlength=n_faces * 8)
-    return solver.Surface(P, tris), key, key_area, P[tris].mean(axis=1), normal, area
+    return solver.Surface(P, tris), key, key_area
 
 
 def mirror_locks(obj, cage):

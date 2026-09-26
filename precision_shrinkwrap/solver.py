@@ -19,11 +19,6 @@ buttock crease or the cleavage, where the stock Shrinkwrap modifier stretches:
 
 An optional "valley tension" pass then lets the fabric bridge valleys: the mesh
 is smoothed and only pushed *out* of the offset surface, never pulled in.
-
-``closing_targets`` / the ``bridge`` option compute the closing of the offset
-surface by a ball (valleys narrower than about twice the radius are spanned).
-It is used to wrap rough cages for region detection, where only the coverage
-matters.
 """
 
 import numpy as np
@@ -77,7 +72,7 @@ class Surface:
         """Project points P[idx] onto the offset surface.
 
         mode "eq":  signed distance == offset  (follow the surface)
-        mode "min": signed distance >= offset  (only push out)
+        mode "min": signed distance >= offset  (only push out; used for tension)
 
         Returns the new points and the offset-surface normals (N, 3); rows that
         are not in ``idx`` get a zero normal.
@@ -108,7 +103,7 @@ class Topology:
     open edges (leg holes, waist band, neckline) slide along themselves instead
     of shrinking inwards."""
 
-    def __init__(self, n_verts, edges, edge_face_count, tris=None):
+    def __init__(self, n_verts, edges, edge_face_count):
         edges = np.asarray(edges, dtype=np.int64).reshape(-1, 2)
         count = np.asarray(edge_face_count, dtype=np.int64)
         boundary_edge = count != 2
@@ -122,7 +117,6 @@ class Topology:
         self.dst = dst[keep]
         self.deg = np.bincount(self.src, minlength=n_verts).astype(np.float64)
         self.boundary = vb
-        self.tris = None if tris is None else np.asarray(tris, dtype=np.int64).reshape(-1, 3)
 
     def laplacian(self, P):
         n = self.n
@@ -144,31 +138,6 @@ def _tangential(U, N):
     return U - np.einsum("ij,ij->i", U, N)[:, None] * N
 
 
-def closing_targets(P, surface, offset, radius, tris):
-    """Project P onto the closing of the offset surface by a ball of ``radius``.
-
-    The mesh (P, tris) is first put onto the level set offset + radius (L),
-    where valleys narrower than 2 * (offset + radius) are filled.  A point then
-    goes to distance ``radius`` below its closest point on L: straight under L
-    (exactly at ``offset`` from the target) or, under a crease of L, onto the
-    arc of that radius.  Returns (targets, outward normals).
-    """
-    n = len(P)
-    Y, _ = surface.project(P, offset + radius, np.arange(n), max_iter=8)
-    bvh = BVHTree.FromPolygons(Y.tolist(), tris.tolist(), all_triangles=True)
-    fn = bvh.find_nearest
-    res = [fn(p) for p in P.tolist()]
-    foot = np.array([r[0] if r[0] is not None else y for r, y in zip(res, Y.tolist())],
-                    dtype=np.float64).reshape(-1, 3)
-    _, nrm, _ = surface.signed(foot)
-    V = P - foot
-    dist = np.linalg.norm(V, axis=1)
-    inward = (np.einsum("ij,ij->i", V, nrm) < 0.0) & (dist > 1e-9 * max(surface.bbox_diag, 1.0))
-    u = np.where(inward[:, None], V / np.maximum(dist, _EPS)[:, None], -nrm)
-    r = np.broadcast_to(np.asarray(radius, dtype=np.float64), (n,))
-    return foot + u * r[:, None], -u
-
-
 def auto_anneal_start(surface, P, offset):
     """Starting offset for annealing: far enough out that valleys are filled,
     but never absurdly large compared to the target."""
@@ -179,18 +148,15 @@ def auto_anneal_start(surface, P, offset):
 
 
 def solve(P0, topo, surface, offset, *, iterations=30, relax=0.5, preserve=True,
-          tension=0, bridge=0.0, anneal_start=0.0, pinned=None, start=None, progress=None,
-          substeps=4, constrain=None, bridge_rounds=10):
+          tension=0, anneal_start=0.0, pinned=None, start=None, progress=None, substeps=4,
+          constrain=None):
     """Fit points P0 (world space, (N, 3)) onto the offset surface.
 
     offset:        (N,) per-vertex offset distance
     iterations:    number of project/relax rounds
     relax:         tangential relaxation strength per round (0..1)
     preserve:      keep the original edge flow (True) or make it even (False)
-    tension:       number of valley-bridging smoothing rounds after the fit
-    bridge:        radius of a closing that spans valleys (needs topo.tris).
-                   Coarse: the spanned rows can fold, so it is only meant for
-                   region detection, not for final garments
+    tension:       number of valley-bridging rounds after the fit
     anneal_start:  offset to start the annealing from (<= offset: no annealing)
     pinned:        (N,) bool, vertices that must not move
     start:         optional initial positions (defaults to P0)
@@ -214,10 +180,8 @@ def solve(P0, topo, surface, offset, *, iterations=30, relax=0.5, preserve=True,
     tol = 1e-4 * scale
 
     iterations = max(int(iterations), 1)
-    bridging = bridge > 0.0 and topo.tris is not None and len(topo.tris)
-    rounds = int(bridge_rounds) if bridging else 0
     tension = max(int(tension), 0)
-    total = iterations + rounds + tension + 1
+    total = iterations + tension + 1
     extra = np.maximum(float(anneal_start) - offset, 0.0)
 
     N = np.zeros_like(P)
@@ -240,28 +204,6 @@ def solve(P0, topo, surface, offset, *, iterations=30, relax=0.5, preserve=True,
     if progress:
         progress((iterations + 1) / total)
 
-    if rounds:
-        # Valley bridge: alternate projection onto the closing surface with
-        # tangential relaxation on it, so the vertices lifted out of a valley
-        # spread over the span instead of bunching up.
-        # The rows lifted out of the valley have to share a shorter span, so
-        # they are spread evenly here (keeping the original spacing would
-        # fold them over each other).
-        for k in range(rounds):
-            T, NS = closing_targets(P, surface, offset, bridge, topo.tris)
-            P[free] = T[free]
-            for _ in range(substeps * 2):
-                U = relax * _tangential(topo.laplacian(P), NS)
-                U[pinned] = 0.0
-                P += U
-            P = fix(P)
-            if progress:
-                progress((iterations + 2 + k) / total)
-        T, _ = closing_targets(P, surface, offset, bridge, topo.tris)
-        P[free] = T[free]
-        P, N = surface.project(P, offset, free, mode="min", max_iter=6, tol=tol)
-        P = fix(P)
-
     # Valley tension: smooth freely (this pulls fabric out of concave areas and
     # pushes it into convex ones) then only push out; convex areas return to
     # the offset surface, concave areas stay bridged.
@@ -277,5 +219,5 @@ def solve(P0, topo, surface, offset, *, iterations=30, relax=0.5, preserve=True,
         P = fix(P)
         N[free] = N_new[free]
         if progress:
-            progress((iterations + rounds + 2 + k) / total)
+            progress((iterations + 2 + k) / total)
     return P
