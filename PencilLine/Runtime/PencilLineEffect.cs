@@ -107,7 +107,8 @@ namespace PencilLine
         [Range(0.02f, 1f)] public float wrinkleThreshold = 0.168f;
 
         [Header("テクスチャ線")]
-        [Tooltip("フラット化していないマテリアルで、テクスチャの色の差がこれ以上の所に線を引く (0でオフ)")]
+        [Tooltip("テクスチャの色の差がこれ以上の所に線を引く (0でオフ)。フラット版では色の境界のうち、差がこれ以上の所。\n" +
+                 "※ 上の『Texture Width』が 0 だとテクスチャ線ごとオフなので効きません")]
         [Range(0f, 0.5f)] public float textureEdgeThreshold = 0f;
 
         [Header("強弱と間引き (欲しい線だけ残す)")]

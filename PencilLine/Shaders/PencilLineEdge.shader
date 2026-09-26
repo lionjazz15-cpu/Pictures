@@ -219,8 +219,24 @@ Shader "Hidden/PencilLine/Edge"
                     {
                         if (c.pal > 0.5 && n.pal > 0.5)
                         {
-                            // フラット版: 線フラグの付いた色の境界
-                            if (c.pal != n.pal && (c.palFlag + n.palFlag) > 0.5) t = T_TEXTURE;
+                            // フラット版: 線フラグの付いた色の境界。しきい値が 0 より大きければ、
+                            // 元の色の差がしきい値を超える色の境界にも引く
+                            if (c.pal != n.pal)
+                            {
+                                if ((c.palFlag + n.palFlag) > 0.5)
+                                {
+                                    t = T_TEXTURE;
+                                }
+                                else if (_PL_TexEdge.x > 0.0)
+                                {
+                                    float dp = length(PL_LinearToOklab(c.alb) - PL_LinearToOklab(n.alb));
+                                    if (dp > _PL_TexEdge.x)
+                                    {
+                                        t = T_TEXTURE;
+                                        s = saturate((dp - _PL_TexEdge.x) / _PL_TexEdge.x);
+                                    }
+                                }
+                            }
                         }
                         else if (_PL_TexEdge.x > 0.0)
                         {

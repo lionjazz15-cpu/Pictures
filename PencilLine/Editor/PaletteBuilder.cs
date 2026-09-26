@@ -135,6 +135,11 @@ namespace PencilLine.EditorTools
                 Color shadeTint = ToShader(Info.shadeColor);
                 if (HasMaterialShade && Info.shadeTex != null) shadePx = ReadTexture(Info.shadeTex, w, h);
 
+                // 不透明マテリアルではアルファを見ない
+                // (ゲーム由来や VRM のテクスチャは、アルファにツヤのマスクなど別の情報が入っていることがある。
+                //  見た目は RGB だけなので、アルファ 0 の所も色として扱う)
+                bool useAlpha = Info.alpha != AlphaKind.Opaque;
+                float alphaCut = Info.alpha == AlphaKind.Cutout ? Mathf.Clamp(Info.cutoff, 0.01f, 0.99f) : 0.1f;
                 int n = px.Length;
                 var lab = new float[n * 3];
                 var opaque = new bool[n];
@@ -145,7 +150,7 @@ namespace PencilLine.EditorTools
                     lab[i * 3] = o.x;
                     lab[i * 3 + 1] = o.y;
                     lab[i * 3 + 2] = o.z;
-                    opaque[i] = px[i].a >= 0.1f;
+                    opaque[i] = !useAlpha || px[i].a >= alphaCut;
                     if (opaque[i]) opaqueCount++;
                 }
                 if (opaqueCount == 0)
