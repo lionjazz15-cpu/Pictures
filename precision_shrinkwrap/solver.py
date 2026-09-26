@@ -46,6 +46,12 @@ class Surface:
         F = np.array([r[1] if r[1] is not None else (0.0, 0.0, 1.0) for r in res], dtype=np.float64)
         return Q.reshape(-1, 3), F.reshape(-1, 3)
 
+    def nearest_index(self, P):
+        """Index of the closest triangle for every point in P (-1 if none)."""
+        fn = self.bvh.find_nearest
+        return np.array([(r[2] if r[2] is not None else -1) for r in (fn(p) for p in P.tolist())],
+                        dtype=np.int64)
+
     def signed(self, P):
         """Return (closest point, outward direction, signed distance).
 
@@ -142,7 +148,8 @@ def auto_anneal_start(surface, P, offset):
 
 
 def solve(P0, topo, surface, offset, *, iterations=30, relax=0.5, preserve=True,
-          tension=0, anneal_start=0.0, pinned=None, start=None, progress=None, substeps=4):
+          tension=0, anneal_start=0.0, pinned=None, start=None, progress=None, substeps=4,
+          constrain=None):
     """Fit points P0 (world space, (N, 3)) onto the offset surface.
 
     offset:        (N,) per-vertex offset distance
@@ -154,6 +161,8 @@ def solve(P0, topo, surface, offset, *, iterations=30, relax=0.5, preserve=True,
     pinned:        (N,) bool, vertices that must not move
     start:         optional initial positions (defaults to P0)
     substeps:      relaxation sub-steps per projection
+    constrain:     optional callable(P) -> P applied after every update (e.g. to
+                   keep vertices on a mirror plane)
     progress:      optional callable(fraction)
     """
     P0 = np.asarray(P0, dtype=np.float64)
@@ -164,6 +173,7 @@ def solve(P0, topo, surface, offset, *, iterations=30, relax=0.5, preserve=True,
     P = (P0 if start is None else np.asarray(start, dtype=np.float64)).copy()
     if len(free) == 0:
         return P
+    fix = constrain if constrain is not None else (lambda X: X)
 
     L0 = topo.laplacian(P0) if preserve else np.zeros_like(P0)
     scale = max(topo.mean_edge_length(P0), surface.bbox_diag * 1e-4, 1e-9)
@@ -185,10 +195,12 @@ def solve(P0, topo, surface, offset, *, iterations=30, relax=0.5, preserve=True,
             U = relax * _tangential(topo.laplacian(P) - L0, N)
             U[pinned] = 0.0
             P += U
+        P = fix(P)
         if progress:
             progress((k + 1) / total)
 
     P, N = surface.project(P, offset, free, max_iter=12, tol=tol)
+    P = fix(P)
     if progress:
         progress((iterations + 1) / total)
 
@@ -197,10 +209,14 @@ def solve(P0, topo, surface, offset, *, iterations=30, relax=0.5, preserve=True,
     # the offset surface, concave areas stay bridged.
     for k in range(tension):
         L0t = _tangential(L0, N) if preserve else 0.0
-        U = relax * (topo.laplacian(P) - L0t)
-        U[pinned] = 0.0
-        P += U
+        # smoothing is cheap and has to travel across the whole valley, so
+        # use many more sub-steps per projection than the fit itself
+        for _ in range(substeps * 4):
+            U = relax * (topo.laplacian(P) - L0t)
+            U[pinned] = 0.0
+            P += U
         P, N_new = surface.project(P, offset, free, mode="min", max_iter=6, tol=tol)
+        P = fix(P)
         N[free] = N_new[free]
         if progress:
             progress((iterations + 2 + k) / total)

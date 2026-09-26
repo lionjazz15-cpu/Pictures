@@ -76,6 +76,7 @@ class PSW_Settings(bpy.types.PropertyGroup):
         name="Region",
         items=[("SELECTED", "Selected Faces", "Faces selected in Edit Mode"),
                ("VERTEX_GROUP", "Vertex Group", "Faces whose vertices are all in the group (>= 0.5)"),
+               ("ROUGH_CAGE", "Rough Cage", "Faces covered by a rough low-poly cage placed around the body"),
                ("PROXIMITY", "Near Object", "Faces close to another object (e.g. an existing garment)"),
                ("ALL", "All", "The whole mesh")],
         default="SELECTED")
@@ -84,6 +85,22 @@ class PSW_Settings(bpy.types.PropertyGroup):
     proximity_distance: FloatProperty(
         name="Distance", default=0.01, min=0.0, unit="LENGTH", precision=4,
         description="Maximum distance to the object for a face to be included")
+    cage_object: PointerProperty(name="Rough Cage", type=bpy.types.Object, poll=_is_mesh,
+                                 description="Low-poly cage that marks where the garment goes")
+    cage_coverage: FloatProperty(
+        name="Coverage", default=0.5, min=0.05, max=1.0, subtype="FACTOR",
+        description="How much of a body face the cage must cover for the face to be included")
+    boundary_smooth: IntProperty(
+        name="Smooth Border", default=10, min=0, soft_max=50,
+        description="Smooth the staircase border of an automatically picked region along the "
+                    "body (Rough Cage / Near Object). Border vertices then no longer sit on body "
+                    "vertices; everything inside still does")
+    hide_cage: BoolProperty(name="Hide Cage", default=True,
+                            description="Hide the rough cage after the garment is created")
+    keep_mirror: BoolProperty(
+        name="Keep Mirror", default=True,
+        description="If the body uses a Mirror modifier, output only one half with a Mirror "
+                    "modifier (Applied mode); the result still matches the body exactly")
     keep_shape_keys: BoolProperty(
         name="Keep Shape Keys", default=True,
         description="Keep the body's shape keys on the new mesh (Keep Subdivision mode)")

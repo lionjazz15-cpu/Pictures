@@ -6,6 +6,7 @@ import numpy as np
 
 from . import fitting
 from . import mesh_utils as mu
+from . import rough_cage
 
 REGION_ATTR = "_psw_region"
 
@@ -48,8 +49,160 @@ class PSW_OT_fit(bpy.types.Operator):
             return {"CANCELLED"}
         finally:
             progress.end()
-        self.report({"INFO"}, f"Fitted {len(garments)} object(s)")
+        body_edge = mu.mean_edge_length_world(s.target.data, s.target.matrix_world)
+        coarse = [o.name for o in garments if not mu.has_subdivision(o)
+                  and mu.mean_edge_length_world(o.data, o.matrix_world) > 3.0 * body_edge]
+        if coarse:
+            self.report({"WARNING"},
+                        f"{', '.join(coarse)}: much coarser than the body, flat faces will cut into "
+                        "curved areas. Use 'Rough Cage to Exact Fit' for rough cages")
+        else:
+            self.report({"INFO"}, f"Fitted {len(garments)} object(s)")
         return {"FINISHED"}
+
+
+# ---------------------------------------------------------------------------
+# building a garment from a region of the body
+
+
+def _link_like(context, obj, body):
+    cols = body.users_collection
+    (cols[0] if cols else context.scene.collection).objects.link(obj)
+
+
+def _delete_faces(me, keep):
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bm.faces.ensure_lookup_table()
+    kill = [f for f in bm.faces if not keep[f.index]]
+    if kill:
+        bmesh.ops.delete(bm, geom=kill, context="FACES")
+    loose_edges = [e for e in bm.edges if not e.link_faces]
+    if loose_edges:
+        bmesh.ops.delete(bm, geom=loose_edges, context="EDGES")
+    loose = [v for v in bm.verts if not v.link_faces]
+    if loose:
+        bmesh.ops.delete(bm, geom=loose, context="VERTS")
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
+
+
+def _body_mirrors(body):
+    return [m for m in body.modifiers
+            if m.type == "MIRROR" and m.show_viewport and m.mirror_object is None]
+
+
+def _copy_cage(context, s, body, keep, name):
+    """Keep Subdivision: the body's cage faces with the whole modifier stack
+    (Mirror, Subdivision, Armature ...)."""
+    me = body.data.copy()
+    me.name = name
+    obj = body.copy()
+    obj.data = me
+    obj.name = name
+    _link_like(context, obj, body)
+    if not s.keep_shape_keys and me.shape_keys:
+        obj.shape_key_clear()
+    _delete_faces(me, keep)
+    return obj
+
+
+def _copy_applied(context, s, body, keep, name):
+    """Applied: the evaluated (subdivided) body itself.  With a mirrored body
+    and "Keep Mirror", only the original half is kept and a Mirror modifier is
+    added, which reproduces the evaluated body exactly."""
+    src = body.data
+    attr = src.attributes.new(REGION_ATTR, "BOOLEAN", "FACE")
+    attr.data.foreach_set("value", keep)
+    try:
+        with mu.modifiers_disabled(body, mu.POSE_DEFORM_TYPES):
+            dg = mu.evaluated_depsgraph(context)
+            ev = body.evaluated_get(dg)
+            me = bpy.data.meshes.new_from_object(ev, preserve_all_data_layers=True, depsgraph=dg)
+    finally:
+        src.attributes.remove(src.attributes[REGION_ATTR])
+    me.name = name
+    a = me.attributes.get(REGION_ATTR)
+    sub_keep = np.ones(len(me.polygons), dtype=bool)
+    if a is not None:
+        a.data.foreach_get("value", sub_keep)
+        me.attributes.remove(a)
+
+    mirrors = _body_mirrors(body) if s.keep_mirror else []
+    if mirrors:
+        cage = mu.mesh_coords(src)
+        centers = np.empty(len(me.polygons) * 3)
+        me.polygons.foreach_get("center", centers)
+        centers = centers.reshape(-1, 3)
+        eps = 1e-6 * max(float(np.ptp(cage, axis=0).max()) if len(cage) else 1.0, 1e-9)
+        for m in mirrors:
+            for ax in range(3):
+                if m.use_axis[ax]:
+                    side = 1.0 if cage[:, ax].mean() >= 0 else -1.0
+                    sub_keep &= centers[:, ax] * side > -eps
+    _delete_faces(me, sub_keep)
+    if mirrors:
+        P = mu.mesh_coords(me)
+        for m in mirrors:
+            thr = max(m.merge_threshold, 1e-6)
+            for ax in range(3):
+                if m.use_axis[ax]:
+                    P[np.abs(P[:, ax]) <= thr, ax] = 0.0
+        mu.set_mesh_coords(me, P)
+
+    obj = bpy.data.objects.new(name, me)
+    obj.parent = body.parent
+    obj.parent_type = body.parent_type
+    obj.parent_bone = body.parent_bone
+    obj.matrix_parent_inverse = body.matrix_parent_inverse.copy()
+    obj.matrix_world = body.matrix_world.copy()
+    for vg in body.vertex_groups:
+        if vg.name not in obj.vertex_groups:
+            obj.vertex_groups.new(name=vg.name)
+    for m in mirrors:
+        nm = obj.modifiers.new(m.name, "MIRROR")
+        mu.copy_modifier_settings(m, nm)
+        nm.use_clip = True
+        nm.use_mirror_merge = True
+    if s.copy_armature:
+        for m in body.modifiers:
+            if m.type == "ARMATURE":
+                mu.copy_modifier_settings(m, obj.modifiers.new(m.name, "ARMATURE"))
+    _link_like(context, obj, body)
+    return obj
+
+
+def create_from_region(context, s, body, keep, name, progress=None, smooth=0):
+    """Build the garment from the body faces in ``keep``; returns (obj, message).
+    ``smooth``: border smoothing iterations for automatically picked regions."""
+    # Without "Fit to Body" the region is only copied (useful for loose
+    # clothing that is shaped by hand or fitted to another object later).
+    fit = s.transfer_fit and (s.transfer_mode == "SUBDIV" or s.offset > 0.0)
+    surface = mu.target_surface(context, body) if fit else None
+    if s.transfer_mode == "SUBDIV":
+        obj = _copy_cage(context, s, body, keep, name)
+        msg = f"Created '{obj.name}' ({len(obj.data.vertices)} cage vertices)"
+    else:
+        obj = _copy_applied(context, s, body, keep, name)
+        msg = f"Created '{obj.name}' ({len(obj.data.vertices)} vertices)"
+    if smooth > 0:
+        # the applied mesh lies on the body, the cage does not
+        on_body = mu.target_surface(context, body) if s.transfer_mode == "APPLIED" else None
+        fitting.smooth_boundary(obj, smooth, on_body)
+    if fit:
+        new, err = fitting.fit_object(context, obj, surface, s, "NORMAL", progress)
+        mu.write_result(obj, new, "APPLY")
+        if s.transfer_mode == "SUBDIV":
+            msg += f", cage residual {err:.2e}"
+    return obj, msg
+
+
+def _make_active(context, obj):
+    for o in context.selected_objects:
+        o.select_set(False)
+    obj.select_set(True)
+    context.view_layer.objects.active = obj
 
 
 class PSW_OT_transfer_topology(bpy.types.Operator):
@@ -67,46 +220,20 @@ class PSW_OT_transfer_topology(bpy.types.Operator):
         s = _settings(context)
         body = s.target
         _ensure_object_mode(context)
-        try:
-            keep = self._region(context, s, body)
-        except ValueError as e:
-            self.report({"ERROR"}, str(e))
-            return {"CANCELLED"}
-        if not keep.any():
-            self.report({"ERROR"}, "No faces in the region")
-            return {"CANCELLED"}
-
-        # Without "Fit to Body" the region is only copied (useful for loose
-        # clothing that is shaped by hand or fitted to another object later).
-        fit = s.transfer_fit and (s.transfer_mode == "SUBDIV" or s.offset > 0.0)
-        surface = mu.target_surface(context, body) if fit else None
         progress = fitting.Progress(context)
         try:
-            if s.transfer_mode == "SUBDIV":
-                obj = self._copy_cage(context, s, body, keep)
-                msg = f"Created '{obj.name}' ({len(obj.data.vertices)} cage vertices)"
-            else:
-                obj = self._copy_applied(context, s, body, keep)
-                msg = f"Created '{obj.name}' ({len(obj.data.vertices)} vertices)"
-            if fit:
-                new, err = fitting.fit_object(context, obj, surface, s, "NORMAL", progress)
-                mu.write_result(obj, new, "APPLY")
-                if s.transfer_mode == "SUBDIV":
-                    msg += f", cage residual {err:.2e}"
-        except RuntimeError as e:
+            keep = self._region(context, s, body)
+            auto = s.region in {"ROUGH_CAGE", "PROXIMITY"}
+            obj, msg = create_from_region(context, s, body, keep, body.name + "_Wear", progress,
+                                          smooth=s.boundary_smooth if auto else 0)
+        except (ValueError, RuntimeError) as e:
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
         finally:
             progress.end()
-
-        for o in context.selected_objects:
-            o.select_set(False)
-        obj.select_set(True)
-        context.view_layer.objects.active = obj
+        _make_active(context, obj)
         self.report({"INFO"}, msg)
         return {"FINISHED"}
-
-    # -- region ------------------------------------------------------------
 
     def _region(self, context, s, body):
         me = body.data
@@ -116,7 +243,18 @@ class PSW_OT_transfer_topology(bpy.types.Operator):
         if s.region == "SELECTED":
             sel = np.zeros(nf, dtype=bool)
             me.polygons.foreach_get("select", sel)
+            if not sel.any():
+                raise ValueError(f"No faces of '{body.name}' are selected: select the region in "
+                                 "Edit Mode, or use Region = Rough Cage")
             return sel
+        if s.region == "ROUGH_CAGE":
+            cage = s.cage_object
+            if cage is None or cage == body:
+                raise ValueError("Choose the rough cage object")
+            keep = rough_cage.region(context, body, cage, s.cage_coverage)
+            if not keep.any():
+                raise ValueError(f"'{cage.name}' does not cover '{body.name}': place it around the body")
+            return keep
         loop_verts = np.empty(len(me.loops), dtype=np.int64)
         me.loops.foreach_get("vertex_index", loop_verts)
         starts = np.empty(nf, dtype=np.int64)
@@ -134,7 +272,13 @@ class PSW_OT_transfer_topology(bpy.types.Operator):
             _, _, sd = near.signed(P)
             vin = np.abs(sd) <= s.proximity_distance
         # a face is in the region if all its corners are
-        return np.logical_and.reduceat(vin[loop_verts], starts) if len(starts) else np.zeros(0, bool)
+        keep = np.logical_and.reduceat(vin[loop_verts], starts) if len(starts) else np.zeros(0, bool)
+        if not keep.any():
+            if s.region == "VERTEX_GROUP":
+                raise ValueError(f"No face has all its vertices in '{s.region_group}' (weight >= 0.5)")
+            raise ValueError(f"No face of '{body.name}' is within {s.proximity_distance:.4g} of "
+                             f"'{s.proximity_object.name}': increase Distance, or use Region = Rough Cage")
+        return keep
 
     def _cage_on_surface(self, context, body):
         """World positions of the cage vertices as they appear after the
@@ -152,82 +296,55 @@ class PSW_OT_transfer_topology(bpy.types.Operator):
             P = mu.mesh_coords(body.data)
         return mu.to_world(P[:n], body.matrix_world)
 
-    # -- mesh creation -----------------------------------------------------
 
-    @staticmethod
-    def _delete_faces(me, keep):
-        bm = bmesh.new()
-        bm.from_mesh(me)
-        bm.faces.ensure_lookup_table()
-        kill = [f for f in bm.faces if not keep[f.index]]
-        if kill:
-            bmesh.ops.delete(bm, geom=kill, context="FACES")
-        loose_edges = [e for e in bm.edges if not e.link_faces]
-        if loose_edges:
-            bmesh.ops.delete(bm, geom=loose_edges, context="EDGES")
-        loose = [v for v in bm.verts if not v.link_faces]
-        if loose:
-            bmesh.ops.delete(bm, geom=loose, context="VERTS")
-        bm.to_mesh(me)
-        bm.free()
-        me.update()
+class PSW_OT_conform_rough_cage(bpy.types.Operator):
+    """Turn a rough low-poly cage into a garment that matches the body exactly:
+    the cage only marks where the garment goes, the garment is built from the
+    body's own topology"""
+    bl_idname = "precision_shrinkwrap.conform_rough_cage"
+    bl_label = "Rough Cage to Exact Fit"
+    bl_options = {"REGISTER", "UNDO"}
 
-    @staticmethod
-    def _link_like(context, obj, body):
-        cols = body.users_collection
-        (cols[0] if cols else context.scene.collection).objects.link(obj)
+    @classmethod
+    def poll(cls, context):
+        return PSW_OT_fit.poll(context)
 
-    def _copy_cage(self, context, s, body, keep):
-        me = body.data.copy()
-        me.name = body.data.name + "_Wear"
-        obj = body.copy()
-        obj.data = me
-        obj.name = body.name + "_Wear"
-        self._link_like(context, obj, body)
-        if not s.keep_shape_keys and me.shape_keys:
-            obj.shape_key_clear()
-        self._delete_faces(me, keep)
-        return obj
-
-    def _copy_applied(self, context, s, body, keep):
-        src = body.data
-        attr = src.attributes.new(REGION_ATTR, "BOOLEAN", "FACE")
-        attr.data.foreach_set("value", keep)
+    def execute(self, context):
+        s = _settings(context)
+        body = s.target
+        _ensure_object_mode(context)
+        active = context.active_object
+        cages = [o for o in context.selected_objects if o.type == "MESH" and o != body]
+        if active in cages:
+            cages.remove(active)
+            cages.insert(0, active)
+        progress = fitting.Progress(context)
+        made = []
         try:
-            with mu.modifiers_disabled(body, mu.POSE_DEFORM_TYPES):
-                dg = mu.evaluated_depsgraph(context)
-                ev = body.evaluated_get(dg)
-                me = bpy.data.meshes.new_from_object(ev, preserve_all_data_layers=True, depsgraph=dg)
+            for i, cage in enumerate(cages):
+                keep = rough_cage.region(context, body, cage, s.cage_coverage,
+                                         progress=lambda f, i=i: progress((i + 0.5 * f) / len(cages)))
+                if not keep.any():
+                    raise ValueError(f"'{cage.name}' does not cover '{body.name}': place it around the body")
+                obj, msg = create_from_region(
+                    context, s, body, keep, cage.name + "_Fit",
+                    lambda f, i=i: progress((i + 0.5 + 0.5 * f) / len(cages)), smooth=s.boundary_smooth)
+                if cage.data.materials:
+                    obj.data.materials.clear()
+                    for mat in cage.data.materials:
+                        obj.data.materials.append(mat)
+                    obj.data.polygons.foreach_set("material_index", np.zeros(len(obj.data.polygons), np.int32))
+                if s.hide_cage:
+                    cage.hide_set(True)
+                made.append(obj)
+        except (ValueError, RuntimeError) as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
         finally:
-            src.attributes.remove(src.attributes[REGION_ATTR])
-        me.name = body.data.name + "_Wear"
-        a = me.attributes.get(REGION_ATTR)
-        sub_keep = np.zeros(len(me.polygons), dtype=bool)
-        if a is not None:
-            a.data.foreach_get("value", sub_keep)
-            me.attributes.remove(a)
-        else:
-            sub_keep[:] = True
-        self._delete_faces(me, sub_keep)
-
-        obj = bpy.data.objects.new(body.name + "_Wear", me)
-        obj.parent = body.parent
-        obj.parent_type = body.parent_type
-        obj.parent_bone = body.parent_bone
-        obj.matrix_parent_inverse = body.matrix_parent_inverse.copy()
-        obj.matrix_world = body.matrix_world.copy()
-        for vg in body.vertex_groups:
-            if vg.name not in obj.vertex_groups:
-                obj.vertex_groups.new(name=vg.name)
-        if s.copy_armature:
-            for m in body.modifiers:
-                if m.type == "ARMATURE":
-                    nm = obj.modifiers.new(m.name, "ARMATURE")
-                    for prop in ("object", "use_vertex_groups", "use_bone_envelopes",
-                                 "use_deform_preserve_volume", "use_multi_modifier"):
-                        setattr(nm, prop, getattr(m, prop))
-        self._link_like(context, obj, body)
-        return obj
+            progress.end()
+        _make_active(context, made[-1])
+        self.report({"INFO"}, msg if len(made) == 1 else f"Created {len(made)} garments")
+        return {"FINISHED"}
 
 
 class PSW_OT_check_offset(bpy.types.Operator):
@@ -254,4 +371,4 @@ class PSW_OT_check_offset(bpy.types.Operator):
         return {"FINISHED"}
 
 
-classes = (PSW_OT_fit, PSW_OT_transfer_topology, PSW_OT_check_offset)
+classes = (PSW_OT_fit, PSW_OT_transfer_topology, PSW_OT_conform_rough_cage, PSW_OT_check_offset)

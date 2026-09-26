@@ -82,6 +82,29 @@ _ja = {
     "Copy Armature": "アーマチュアをコピー",
     "Add the body's Armature modifiers to the new mesh (Applied mode)":
         "素体のアーマチュアモディファイアを新メッシュに追加（適用モード）",
+    "Rough Cage to Exact Fit": "ラフケージから完全フィット",
+    "Select the rough cage(s), then:": "ラフケージを選択してから実行:",
+    "Rough Cage": "ラフケージ",
+    "Faces covered by a rough low-poly cage placed around the body": "素体のまわりに置いた雑なローポリケージが覆っている面",
+    "Low-poly cage that marks where the garment goes": "衣装を作る範囲を示すローポリのケージ",
+    "Coverage": "カバー率",
+    "How much of a body face the cage must cover for the face to be included":
+        "素体の面をどれだけ覆っていれば範囲に含めるか",
+    "Smooth Border": "境界をなめらかに",
+    "Smooth the staircase border of an automatically picked region along the "
+    "body (Rough Cage / Near Object). Border vertices then no longer sit on body "
+    "vertices; everything inside still does":
+        "自動で選んだ範囲（ラフケージ／近くのオブジェクト）のギザギザの縁を素体に沿ってなめらかにする。縁の頂点は素体頂点からずれるが、内側はそのまま一致",
+    "Hide Cage": "ケージを隠す",
+    "Hide the rough cage after the garment is created": "衣装を作成したらラフケージを非表示にする",
+    "Keep Mirror": "ミラーを維持",
+    "If the body uses a Mirror modifier, output only one half with a Mirror "
+    "modifier (Applied mode); the result still matches the body exactly":
+        "素体がミラーモディファイアを使っている場合、半分＋ミラーモディファイアで出力（適用モード）。結果は素体と完全一致のまま",
+    "Turn a rough low-poly cage into a garment that matches the body exactly: "
+    "the cage only marks where the garment goes, the garment is built from the "
+    "body's own topology":
+        "雑なローポリケージから素体に完全一致する衣装を作る。ケージは範囲の指定だけに使い、衣装は素体のトポロジーで作る",
     # operators
     "Transfer Topology": "トポロジー転写",
     "Check Offset": "オフセット確認",

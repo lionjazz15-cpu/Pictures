@@ -298,9 +298,116 @@ def test_transfer_copy_only():
     check("copy only (applied): vertices coincide with the subdivided body", d.max() == 0.0, f"max {d.max():.1e}")
 
 
+def make_torso(half=False):
+    """Torso with two breasts and a deep cleavage; optionally a half with Mirror."""
+    import bmesh
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=48, ring_count=24, radius=1)
+    t = bpy.context.active_object
+    t.scale = (0.14, 0.095, 0.32)
+    bpy.ops.object.transform_apply(scale=True)
+    for x in (-0.066, 0.066):
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=16, radius=0.066, location=(x, -0.072, 0.1))
+    for o in bpy.context.scene.objects:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = t
+    bpy.ops.object.join()
+    body = bpy.context.active_object
+    body.name = "Body"
+    r = body.modifiers.new("R", "REMESH")
+    r.voxel_size = 0.01
+    bpy.ops.object.modifier_apply(modifier="R")
+    sm = body.modifiers.new("S", "SMOOTH")
+    sm.factor, sm.iterations = 0.5, 4
+    bpy.ops.object.modifier_apply(modifier="S")
+    if half:
+        bm = bmesh.new()
+        bm.from_mesh(body.data)
+        bmesh.ops.bisect_plane(bm, geom=bm.verts[:] + bm.edges[:] + bm.faces[:], plane_co=(0, 0, 0),
+                               plane_no=(1, 0, 0), clear_inner=True)
+        for v in bm.verts:
+            if abs(v.co.x) < 1e-5:
+                v.co.x = 0.0
+        bm.to_mesh(body.data)
+        bm.free()
+        body.modifiers.new("Mirror", "MIRROR").use_clip = True
+    body.modifiers.new("Subdivision", "SUBSURF").levels = 1
+    return body
+
+
+def make_rough_band():
+    """A quickly blocked-out 10 x 3 band around the chest, well off the body."""
+    import bmesh
+    bpy.ops.mesh.primitive_cylinder_add(vertices=10, radius=1, depth=1, end_fill_type="NOTHING")
+    g = bpy.context.active_object
+    g.name = "RoughCage"
+    bm = bmesh.new()
+    bm.from_mesh(g.data)
+    bmesh.ops.subdivide_edges(bm, edges=[e for e in bm.edges if abs(e.verts[0].co.z - e.verts[1].co.z) > 0.5],
+                              cuts=2)
+    bm.to_mesh(g.data)
+    bm.free()
+    g.scale = (0.2, 0.2, 0.12)
+    g.location = (0, 0, 0.09)
+    bpy.ops.object.transform_apply(location=True, scale=True)
+    g.data.materials.append(bpy.data.materials.new("Fabric"))
+    return g
+
+
+def test_rough_cage():
+    for half in (False, True):
+        for mode in ("APPLIED", "SUBDIV"):
+            label = f"rough cage ({mode.lower()}, {'mirrored half body' if half else 'full body'})"
+            reset()
+            body = make_torso(half)
+            cage = make_rough_band()
+            s = bpy.context.scene.precision_shrinkwrap
+            s.target = body
+            s.offset = 0.001
+            s.transfer_mode = mode
+            bpy.ops.object.select_all(action="DESELECT")
+            cage.select_set(True)
+            bpy.context.view_layer.objects.active = cage
+            assert bpy.ops.precision_shrinkwrap.conform_rough_cage() == {"FINISHED"}
+            w = bpy.context.active_object
+            surf = mu.target_surface(bpy.context, body)
+            W = eval_world(w)
+            _, _, sd = surf.signed(W)
+            dev = np.abs(sd - 0.001)
+            check(f"{label}: exact offset", np.percentile(dev, 99) < 1.5e-4,
+                  f"p99 {np.percentile(dev, 99):.1e} max {dev.max():.1e}")
+            check(f"{label}: nothing inside", sd.min() > 0.0009, f"min {sd.min():.5f}")
+            # covers the band's height all the way round (both sides when mirrored)
+            check(f"{label}: covers the band", W[:, 2].min() < 0.05 and W[:, 2].max() > 0.12
+                  and W[:, 0].min() < -0.12 and W[:, 0].max() > 0.12,
+                  f"z {W[:, 2].min():.3f}..{W[:, 2].max():.3f}")
+            check(f"{label}: cage material, cage hidden",
+                  w.data.materials[0].name == "Fabric" and cage.hide_get())
+            if half:
+                check(f"{label}: output is a half with Mirror",
+                      any(m.type == "MIRROR" for m in w.modifiers)
+                      and mu.mesh_coords(w.data)[:, 0].min() > -1e-6)
+
+
+def test_errors_are_explained():
+    reset()
+    body = make_body(subdiv=1)
+    body.data.polygons.foreach_set("select", np.zeros(len(body.data.polygons), dtype=bool))
+    s = bpy.context.scene.precision_shrinkwrap
+    s.target = body
+    s.region = "SELECTED"
+    bpy.context.view_layer.objects.active = body
+    try:
+        bpy.ops.precision_shrinkwrap.transfer_topology()
+        msg = ""
+    except RuntimeError as e:
+        msg = str(e)
+    check("no selection: error tells what to do", "Edit Mode" in msg and "Rough Cage" in msg, msg[-120:])
+
+
 if __name__ == "__main__":
     for t in (test_fit_vs_stock, test_fit_subdivided_garment, test_fit_mirrored_garment,
-              test_transfer_applied_exact, test_transfer_subdiv, test_transfer_copy_only):
+              test_transfer_applied_exact, test_transfer_subdiv, test_transfer_copy_only,
+              test_rough_cage, test_errors_are_explained):
         print(f"== {t.__name__}")
         t()
     print("FAILED: " + ", ".join(FAILS) if FAILS else "ALL PASSED")

@@ -13,12 +13,12 @@ bl_info = {
 
 if "bpy" in locals():
     import importlib
-    for _m in (solver, mesh_utils, fitting, properties, operators, ui, translations):  # noqa: F821
+    for _m in (solver, mesh_utils, fitting, rough_cage, properties, operators, ui, translations):  # noqa: F821
         importlib.reload(_m)
 
 import bpy
 
-from . import solver, mesh_utils, fitting, properties, operators, ui, translations
+from . import solver, mesh_utils, fitting, rough_cage, properties, operators, ui, translations
 
 _classes = (properties.PSW_Settings, *operators.classes, *ui.classes)
 

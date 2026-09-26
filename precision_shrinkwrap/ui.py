@@ -21,6 +21,38 @@ class PSW_PT_main(bpy.types.Panel):
             layout.prop_search(s, "offset_group", context.active_object, "vertex_groups")
 
 
+class PSW_PT_rough_cage(bpy.types.Panel):
+    bl_label = "Rough Cage to Exact Fit"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "PrecisionSW"
+    bl_parent_id = "PSW_PT_main"
+
+    def draw(self, context):
+        s = context.scene.precision_shrinkwrap
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+        layout.label(text="Select the rough cage(s), then:", icon="INFO")
+        col = layout.column()
+        _draw_output_settings(col, s)
+        col.prop(s, "tension")
+        col.prop(s, "cage_coverage")
+        col.prop(s, "boundary_smooth")
+        col.prop(s, "hide_cage")
+        layout.operator("precision_shrinkwrap.conform_rough_cage", icon="MOD_SHRINKWRAP")
+
+
+def _draw_output_settings(col, s):
+    col.prop(s, "transfer_mode")
+    if s.transfer_mode == "APPLIED":
+        col.prop(s, "keep_mirror")
+        col.prop(s, "copy_armature")
+    else:
+        col.prop(s, "keep_shape_keys")
+    col.prop(s, "transfer_fit")
+
+
 class PSW_PT_fit(bpy.types.Panel):
     bl_label = "Wrap Garment"
     bl_space_type = "VIEW_3D"
@@ -69,22 +101,19 @@ class PSW_PT_transfer(bpy.types.Panel):
         layout.use_property_decorate = False
 
         col = layout.column()
-        col.prop(s, "transfer_mode")
-        col.prop(s, "transfer_fit")
-        sub = col.column()
-        sub.active = s.transfer_fit
-        sub.prop(s, "offset")
+        _draw_output_settings(col, s)
         col.prop(s, "region")
         if s.region == "VERTEX_GROUP" and s.target is not None:
             col.prop_search(s, "region_group", s.target, "vertex_groups")
         elif s.region == "PROXIMITY":
             col.prop(s, "proximity_object")
             col.prop(s, "proximity_distance")
-        if s.transfer_mode == "SUBDIV":
-            col.prop(s, "keep_shape_keys")
-        else:
-            col.prop(s, "copy_armature")
+            col.prop(s, "boundary_smooth")
+        elif s.region == "ROUGH_CAGE":
+            col.prop(s, "cage_object")
+            col.prop(s, "cage_coverage")
+            col.prop(s, "boundary_smooth")
         layout.operator("precision_shrinkwrap.transfer_topology", icon="MOD_SUBSURF")
 
 
-classes = (PSW_PT_main, PSW_PT_fit, PSW_PT_transfer)
+classes = (PSW_PT_main, PSW_PT_rough_cage, PSW_PT_fit, PSW_PT_transfer)

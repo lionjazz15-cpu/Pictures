@@ -138,6 +138,95 @@ def target_surface(context, obj):
     return solver.Surface(P, tris)
 
 
+FACE_ID_ATTR = "_psw_body_face"
+
+
+def body_face_surface(context, body):
+    """The evaluated (rest pose) body as a Surface, plus for every triangle the
+    body cage face it comes from and which mirror copy it is on, and the
+    evaluated area of every (face, copy)."""
+    me = body.data
+    n_faces = len(me.polygons)
+    a = me.attributes.new(FACE_ID_ATTR, "INT", "FACE")
+    a.data.foreach_set("value", np.arange(n_faces, dtype=np.int32))
+    try:
+        with modifiers_disabled(body, POSE_DEFORM_TYPES):
+            dg = evaluated_depsgraph(context)
+            ev = body.evaluated_get(dg)
+            em = ev.to_mesh()
+            try:
+                local = mesh_coords(em)
+                tris = mesh_triangles(em)
+                tri_poly = np.empty(len(em.loop_triangles), dtype=np.int64)
+                em.loop_triangles.foreach_get("polygon_index", tri_poly)
+                ea = em.attributes.get(FACE_ID_ATTR)
+                if ea is not None:
+                    fid = np.empty(len(em.polygons), dtype=np.int32)
+                    ea.data.foreach_get("value", fid)
+                elif len(em.polygons) == n_faces:
+                    fid = np.arange(n_faces, dtype=np.int32)
+                else:
+                    raise RuntimeError(f"'{body.name}': a modifier drops face data; "
+                                       "cannot map the evaluated body to its faces")
+            finally:
+                ev.to_mesh_clear()
+    finally:
+        me.attributes.remove(me.attributes[FACE_ID_ATTR])
+    tri_face = fid[tri_poly].astype(np.int64)
+    # mirror copy id: which side of each mirror plane the triangle is on
+    center = local[tris].mean(axis=1)
+    tri_side = np.zeros(len(tris), dtype=np.int64)
+    axes = sorted({ax for m in body.modifiers if m.type == "MIRROR" and m.show_viewport
+                   and m.mirror_object is None for ax in range(3) if m.use_axis[ax]})
+    if axes:
+        cage = mesh_coords(me)
+        for k, ax in enumerate(axes):
+            side = 1.0 if cage[:, ax].mean() >= 0 else -1.0
+            tri_side |= (center[:, ax] * side < 0).astype(np.int64) << k
+    P = to_world(local, body.matrix_world)
+    area = 0.5 * np.linalg.norm(np.cross(P[tris[:, 1]] - P[tris[:, 0]], P[tris[:, 2]] - P[tris[:, 0]]), axis=1)
+    key = tri_face * 8 + tri_side
+    key_area = np.bincount(key, weights=area, minlength=n_faces * 8)
+    return solver.Surface(P, tris), key, key_area
+
+
+def mirror_locks(obj, cage):
+    """(vertex indices, axis) of cage vertices lying on the plane of one of
+    obj's Mirror modifiers; they have to stay on it."""
+    locks = []
+    for m in obj.modifiers:
+        if m.type != "MIRROR" or not m.show_viewport or m.mirror_object is not None:
+            continue
+        thr = max(m.merge_threshold, 1e-6) if (m.use_clip or m.use_mirror_merge) else 1e-6
+        for ax in range(3):
+            if m.use_axis[ax]:
+                idx = np.nonzero(np.abs(cage[:, ax]) <= thr)[0]
+                if len(idx):
+                    locks.append((idx, ax))
+    return locks
+
+
+def mean_edge_length_world(me, mat):
+    e = np.empty(len(me.edges) * 2, dtype=np.int64)
+    me.edges.foreach_get("vertices", e)
+    if len(e) == 0:
+        return 0.0
+    P = to_world(mesh_coords(me), mat)
+    e = e.reshape(-1, 2)
+    return float(np.linalg.norm(P[e[:, 0]] - P[e[:, 1]], axis=1).mean())
+
+
+def copy_modifier_settings(src, dst):
+    for prop in src.bl_rna.properties:
+        pid = prop.identifier
+        if prop.is_readonly or pid in {"name", "type", "rna_type"}:
+            continue
+        try:
+            setattr(dst, pid, getattr(src, pid))
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+
 def has_subdivision(obj):
     return any(m.type == "SUBSURF" and m.show_viewport for m in obj.modifiers)
 
@@ -167,18 +256,9 @@ class SubdivEvaluator:
             m.show_viewport = i <= last and m.type in LINEAR_TOPOLOGY_TYPES
         self.n_cage = len(self.mesh.vertices)
         self.cage = mesh_coords(self.mesh)
-        # Vertices on a mirror plane (clipping / merge) must stay on it, or the
-        # merge result - and so the topology - changes between evaluations.
-        self.locks = []
-        for m in self.tmp.modifiers:
-            if m.type != "MIRROR" or not m.show_viewport or m.mirror_object is not None:
-                continue
-            if not (m.use_clip or m.use_mirror_merge):
-                continue
-            for ax in range(3):
-                if m.use_axis[ax]:
-                    thr = max(m.merge_threshold, 1e-6)
-                    self.locks.append((np.nonzero(np.abs(self.cage[:, ax]) <= thr)[0], ax))
+        # Vertices on a mirror plane must stay on it, or the merge result - and
+        # so the topology - changes between evaluations.
+        self.locks = mirror_locks(self.tmp, self.cage)
         self.n_eval = None
         fa = self.mesh.attributes.new(FACE_ATTR, "INT", "FACE")
         fa.data.foreach_set("value", np.arange(len(self.mesh.polygons), dtype=np.int32))
