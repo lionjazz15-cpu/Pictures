@@ -48,6 +48,8 @@ namespace PencilLine
         public float paletteCount;
         public float paletteWeightL;
         public float paletteWeightC;
+        public Texture labelTex;            // 境界を整えたパレット番号マップ (なければ null)
+        public Vector4 labelSize;           // x,y: ミップ0の大きさ z: ミップの数 w: リピートなら1
     }
 
     public static class MaterialAdapter
@@ -107,6 +109,11 @@ namespace PencilLine
                 info.paletteCount = info.paletteTex != null ? GetFloat(m, "_PaletteCount", 0f) : 0f;
                 info.paletteWeightL = GetFloat(m, "_WeightL", 1f);
                 info.paletteWeightC = GetFloat(m, "_WeightC", 1f);
+                if (m.HasProperty("_LabelTex") && m.IsKeywordEnabled("_LABELMAP_ON"))
+                {
+                    info.labelTex = m.GetTexture("_LabelTex");
+                    info.labelSize = m.HasProperty("_LabelSize") ? m.GetVector("_LabelSize") : Vector4.one;
+                }
             }
 
             switch (info.family)

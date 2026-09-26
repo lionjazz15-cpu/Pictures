@@ -20,6 +20,13 @@ namespace PencilLine.EditorTools
         public int bakeScale = 1;
         public bool useMaterialShade = true;
 
+        // 境界の整理 (厚塗り・グラデーションのジャギー対策)
+        public bool cleanEdges = true;      // 整えたパレット番号マップを焼き込む
+        public float smoothness = 0.5f;     // 整理の強さ (0〜1)
+        public int labelScale = 2;          // 番号マップの解像度 (解析解像度の何倍か)
+        public int workMaxSize = 2048;      // 境界を整える時の解析解像度の上限
+        public float flatness = 1f;         // 1 = 完全フラット / 0 = 元の塗りの濃淡を残す
+
         public PaletteSettings Clone()
         {
             return (PaletteSettings)MemberwiseClone();
@@ -60,8 +67,16 @@ namespace PencilLine.EditorTools
         public MaterialInfo Info { get; private set; }
         public Texture2D BakedTexture { get; private set; }
         public bool HasMaterialShade { get; private set; }
+        public bool HasLabelMap => _labels != null;
 
         Color _tint = Color.white;
+
+        // 境界を整えたパレット番号マップ (ミップ 0)。ミップは書き出し時に作る
+        byte[] _labels;
+        int _labelW;
+        int _labelH;
+        TextureWrapMode _labelWrap = TextureWrapMode.Repeat;
+        bool _labelsPending;   // 抽出し直した番号マップをまだマテリアルに書いていない
 
         public PaletteBuilder(PaletteSettings settings)
         {
@@ -87,6 +102,8 @@ namespace PencilLine.EditorTools
             warnings.Clear();
             entries.Clear();
             BakedTexture = null;
+            _labels = null;
+            _labelsPending = false;
             Info = MaterialAdapter.Read(src);
 
             try
@@ -107,9 +124,10 @@ namespace PencilLine.EditorTools
                 if (tex == null) tex = Texture2D.whiteTexture; // テクスチャなし = 単色マテリアル
                 _tint = tint;
 
-                // 2. 読み込み
-                Progress(showProgress, "テクスチャを読み込み中…", 0.15f);
-                ComputeReadSize(tex, settings.sampleSize, out int w, out int h);
+                // 2. 読み込み (境界を整える時は高解像度で読む)
+                Progress(showProgress, "テクスチャを読み込み中…", 0.1f);
+                int readMax = settings.cleanEdges ? Mathf.Max(settings.sampleSize, settings.workMaxSize) : settings.sampleSize;
+                ComputeReadSize(tex, readMax, out int w, out int h);
                 Color[] px = ReadTexture(tex, w, h);
 
                 HasMaterialShade = Info.hasShade && settings.useMaterialShade;
@@ -117,24 +135,52 @@ namespace PencilLine.EditorTools
                 Color shadeTint = ToShader(Info.shadeColor);
                 if (HasMaterialShade && Info.shadeTex != null) shadePx = ReadTexture(Info.shadeTex, w, h);
 
-                var pts = new List<Vector3>(px.Length);
-                var idx = new List<int>(px.Length);
-                for (int i = 0; i < px.Length; i++)
+                int n = px.Length;
+                var lab = new float[n * 3];
+                var opaque = new bool[n];
+                int opaqueCount = 0;
+                for (int i = 0; i < n; i++)
                 {
-                    if (px[i].a < 0.1f) continue;
-                    pts.Add(ToOklab(px[i]));
-                    idx.Add(i);
+                    Vector3 o = ToOklab(px[i]);
+                    lab[i * 3] = o.x;
+                    lab[i * 3 + 1] = o.y;
+                    lab[i * 3 + 2] = o.z;
+                    opaque[i] = px[i].a >= 0.1f;
+                    if (opaque[i]) opaqueCount++;
                 }
-                if (pts.Count == 0)
+                if (opaqueCount == 0)
                 {
                     error = "不透明なピクセルがありません";
                     return false;
                 }
 
-                // 3. k-means++
+                // 3. エッジを残して塗りのムラをならす (境界がノイズでガタガタにならないように)
+                LabelMap.Params lp = LabelMap.ParamsFor(settings.smoothness, w, h);
+                if (settings.cleanEdges)
+                {
+                    Progress(showProgress, "塗りのムラをならしています…", 0.2f);
+                    LabelMap.Smooth(lab, opaque, w, h, lp.smoothRadius, lp.smoothSigma, lp.smoothIterations);
+                }
+
+                // 4. k-means++ (間引いた点で)
                 Progress(showProgress, "色を分類中…", 0.4f);
+                int stride = Mathf.Max(1, Mathf.RoundToInt(Mathf.Max(w, h) / (float)Mathf.Max(1, settings.sampleSize)));
+                var pts = new List<Vector3>();
+                for (int pass = 0; pass < 2 && pts.Count == 0; pass++)
+                {
+                    int st = pass == 0 ? stride : 1;
+                    for (int y = 0; y < h; y += st)
+                    {
+                        for (int x = 0; x < w; x += st)
+                        {
+                            int i = y * w + x;
+                            if (opaque[i]) pts.Add(new Vector3(lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]));
+                        }
+                    }
+                }
+
                 var rng = new System.Random(12345);
-                var centers = InitCenters(pts, Mathf.Min(settings.clusterCount, pts.Count), rng);
+                var centers = InitCenters(pts, Mathf.Min(Mathf.Min(settings.clusterCount, MaxPalette), pts.Count), rng);
                 int k = centers.Count;
                 for (int iter = 0; iter < 20; iter++)
                 {
@@ -157,37 +203,71 @@ namespace PencilLine.EditorTools
                     if (moved < 1e-8f) break;
                 }
 
-                // 4. 最終割り当てと、色ごとの MToon 影色の合計
+                // 5. 全ピクセルの割り当てと、色ごとの MToon 影色の合計
+                Progress(showProgress, "色を割り当て中…", 0.6f);
+                byte[] labels = LabelMap.Assign(lab, opaque, w, h, centers.ToArray(), settings.weightL, settings.weightC);
                 var counts = new int[k];
                 var shadeSums = new Vector3[k];
-                for (int i = 0; i < pts.Count; i++)
+                for (int i = 0; i < n; i++)
                 {
-                    int b = Nearest(pts[i], centers);
+                    if (labels[i] == LabelMap.Unassigned) continue;
+                    int b = labels[i];
                     counts[b]++;
                     if (HasMaterialShade)
                     {
-                        Color sc = shadePx != null ? shadePx[idx[i]] : Color.white;
+                        Color sc = shadePx != null ? shadePx[i] : Color.white;
                         shadeSums[b] += new Vector3(sc.r * shadeTint.r, sc.g * shadeTint.g, sc.b * shadeTint.b);
                     }
                 }
 
+                // 面積の大きい順に並べる (番号マップもこの順に付け替える)
+                var order = new List<int>();
                 for (int j = 0; j < k; j++)
                 {
-                    if (counts[j] == 0) continue;
+                    if (counts[j] > 0) order.Add(j);
+                }
+                order.Sort((a, b) => counts[b].CompareTo(counts[a]));
+                var remap = new byte[k];
+                foreach (int j in order)
+                {
+                    remap[j] = (byte)entries.Count;
                     Color srcCol = FromOklab(centers[j]);
                     Color baseShader = new Color(srcCol.r * tint.r, srcCol.g * tint.g, srcCol.b * tint.b, 1f);
                     entries.Add(new PaletteEntry
                     {
                         lab = centers[j],
                         display = ToDisplay(Clamp01(srcCol)),
-                        share = counts[j] / (float)pts.Count,
+                        share = counts[j] / (float)opaqueCount,
                         baseColor = ToDisplay(Clamp01(baseShader)),
                         matShadeSum = shadeSums[j],
                         count = counts[j],
                     });
                 }
-                entries.Sort((a, b) => b.share.CompareTo(a.share));
-                if (entries.Count > MaxPalette) entries.RemoveRange(MaxPalette, entries.Count - MaxPalette);
+
+                // 6. 番号マップを整えて、なめらかに拡大する
+                _labels = null;
+                _labelsPending = true;
+                if (settings.cleanEdges)
+                {
+                    Progress(showProgress, "境界を整えています…", 0.75f);
+                    for (int i = 0; i < n; i++)
+                    {
+                        if (labels[i] != LabelMap.Unassigned) labels[i] = remap[labels[i]];
+                    }
+                    LabelMap.FillUnassigned(labels, w, h);
+                    int m = entries.Count;
+                    var labs = new Vector3[m];
+                    for (int j = 0; j < m; j++) labs[j] = entries[j].lab;
+                    bool[] sim = LabelMap.Similarity(labs, lp.maxDelta);
+                    for (int it = 0; it < lp.modeIterations; it++) labels = LabelMap.ModeFilter(labels, w, h, m, sim, lp.modeRadius);
+                    LabelMap.RemoveIslands(labels, w, h, m, sim, lp.minIsland);
+
+                    Progress(showProgress, "境界をなめらかに拡大しています…", 0.85f);
+                    int scale = Mathf.Clamp(settings.labelScale, 1, 4);
+                    while (scale > 1 && Mathf.Max(w, h) * scale > LabelMap.MaxOutputSize) scale--;
+                    _labels = LabelMap.Upsample(labels, w, h, m, sim, scale, lp.upSigma, out _labelW, out _labelH);
+                    _labelWrap = tex.wrapMode;
+                }
 
                 AutoMerge();
                 return true;
@@ -497,6 +577,8 @@ namespace PencilLine.EditorTools
             flat.SetFloat("_WeightC", settings.weightC);
             flat.SetFloat("_UsePalette", 1f);
             flat.EnableKeyword("_PALETTE_ON");
+            if (flat.HasProperty("_Flatness")) flat.SetFloat("_Flatness", settings.flatness);
+            WriteLabelMap(flat);
             EditorUtility.SetDirty(flat);
             if (saveAssets) AssetDatabase.SaveAssets();
             return flat;
@@ -511,7 +593,80 @@ namespace PencilLine.EditorTools
             FillPalette(tex);
             EditorUtility.SetDirty(tex);
             flat.SetFloat("_PaletteCount", Mathf.Min(entries.Count, MaxPalette));
+            // 抽出し直した直後は番号の並びが変わっているので、番号マップも一緒に書く
+            if (_labelsPending) WriteLabelMap(flat);
             return true;
+        }
+
+        /// <summary>
+        /// 境界を整えたパレット番号マップを PNG に書き、マテリアルに設定する。
+        /// 番号は平均できないので、ミップは 2x2 の多数決で自前で作り、1 枚の PNG に並べる (ミップアトラス)。
+        ///   左: ミップ0 (W×H)   右: ミップ1, 2, 3 … を下から順に積む (幅 W/2)
+        /// .asset にしないのは、テキストシリアライズのプロジェクトで巨大なファイルになるため。
+        /// </summary>
+        void WriteLabelMap(Material flat)
+        {
+            _labelsPending = false;
+            Undo.RecordObject(flat, "Label Map");
+            if (_labels == null)
+            {
+                flat.SetFloat("_UseLabelMap", 0f);
+                flat.DisableKeyword("_LABELMAP_ON");
+                return;
+            }
+
+            int w = _labelW, h = _labelH;
+            byte[] atlas = LabelMap.BuildAtlas(_labels, w, h, out int aw, out int ah, out int levels);
+
+            // RGB24 に番号を入れて PNG 化 (インポート時に Single Channel = R8 にする)
+            var rgb = new byte[aw * ah * 3];
+            for (int i = 0; i < atlas.Length; i++)
+            {
+                rgb[i * 3] = atlas[i];
+                rgb[i * 3 + 1] = atlas[i];
+                rgb[i * 3 + 2] = atlas[i];
+            }
+
+            var tmp = new Texture2D(aw, ah, TextureFormat.RGB24, false, true);
+            tmp.SetPixelData(rgb, 0);
+            tmp.Apply(false);
+            byte[] png = tmp.EncodeToPNG();
+            Object.DestroyImmediate(tmp);
+
+            string path = LabelPath(flat);
+            File.WriteAllBytes(Path.GetFullPath(path), png);
+            AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+            if (AssetImporter.GetAtPath(path) is TextureImporter imp)
+            {
+                imp.textureType = TextureImporterType.SingleChannel;
+                var ts = new TextureImporterSettings();
+                imp.ReadTextureSettings(ts);
+                ts.singleChannelComponent = TextureImporterSingleChannelComponent.Red;
+                imp.SetTextureSettings(ts);
+                imp.sRGBTexture = false;
+                imp.alphaSource = TextureImporterAlphaSource.None;
+                imp.mipmapEnabled = false;
+                imp.isReadable = false;
+                imp.npotScale = TextureImporterNPOTScale.None;
+                imp.filterMode = FilterMode.Point;
+                imp.wrapMode = TextureWrapMode.Clamp;
+                imp.anisoLevel = 0;
+                imp.textureCompression = TextureImporterCompression.Uncompressed;
+                imp.maxTextureSize = Mathf.Clamp(Mathf.NextPowerOfTwo(Mathf.Max(aw, ah)), 32, 16384);
+                imp.SaveAndReimport();
+            }
+
+            flat.SetTexture("_LabelTex", AssetDatabase.LoadAssetAtPath<Texture2D>(path));
+            flat.SetVector("_LabelSize", new Vector4(w, h, levels, _labelWrap == TextureWrapMode.Clamp ? 0f : 1f));
+            flat.SetFloat("_UseLabelMap", 1f);
+            flat.EnableKeyword("_LABELMAP_ON");
+        }
+
+        static string LabelPath(Material m)
+        {
+            string p = AssetDatabase.GetAssetPath(m);
+            string dir = Path.GetDirectoryName(p).Replace('\\', '/');
+            return $"{dir}/{m.name}_Labels.png";
         }
 
         static string PalettePath(Material m)

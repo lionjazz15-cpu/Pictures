@@ -15,12 +15,17 @@ namespace PencilLine.EditorTools
             GetWindow<FlatPaletteWindow>("Flat Palette");
         }
 
-        /// <summary>元マテリアルとフラット版を指定して開き、すぐ抽出する</summary>
-        public static void OpenWith(Material source, Material flat)
+        /// <summary>元マテリアルとフラット版を指定して開き、すぐ抽出する (settings を渡すとその設定で)</summary>
+        public static void OpenWith(Material source, Material flat, PaletteSettings settings = null)
         {
             var w = GetWindow<FlatPaletteWindow>("Flat Palette");
             w._source = source;
             w._flat = flat;
+            if (settings != null)
+            {
+                w._settings = settings.Clone();
+                w._builder = null;
+            }
             w.RunExtract();
             w.Focus();
         }
@@ -29,7 +34,7 @@ namespace PencilLine.EditorTools
         Material _flat;     // フラット版
         bool _liveUpdate = true;
         Vector2 _scroll;
-        readonly PaletteSettings _settings = new PaletteSettings();
+        PaletteSettings _settings = new PaletteSettings();
         PaletteBuilder _builder;
 
         PaletteBuilder Builder => _builder ?? (_builder = new PaletteBuilder(_settings));
@@ -81,6 +86,10 @@ namespace PencilLine.EditorTools
             _settings.achromaticChroma = EditorGUILayout.Slider("白黒灰とみなす彩度", _settings.achromaticChroma, 0f, 0.15f);
 
             EditorGUILayout.Space();
+            EditorGUILayout.LabelField("境界の整理 (厚塗り・グラデーションのジャギー対策)", EditorStyles.boldLabel);
+            DrawCleanEdgeSettings(_settings);
+
+            EditorGUILayout.Space();
             using (new EditorGUILayout.HorizontalScope())
             {
                 if (GUILayout.Button("① 色を抽出", GUILayout.Height(26))) RunExtract();
@@ -96,6 +105,8 @@ namespace PencilLine.EditorTools
 
             DrawEntries();
 
+            EditorGUILayout.Space();
+            DrawFlatness();
             EditorGUILayout.Space();
             using (new EditorGUI.DisabledScope(Builder.entries.Count == 0))
             {
@@ -114,6 +125,46 @@ namespace PencilLine.EditorTools
                 }
             }
             _liveUpdate = EditorGUILayout.ToggleLeft("色の変更をリアルタイムで反映", _liveUpdate);
+        }
+
+        /// <summary>境界の整理の設定 (Avatar Converter と共用)</summary>
+        public static void DrawCleanEdgeSettings(PaletteSettings s)
+        {
+            s.cleanEdges = EditorGUILayout.ToggleLeft(new GUIContent("境界をなめらかに整える (おすすめ)",
+                "塗りのムラをならして小さな色の島を消し、色の境界を 2 倍の解像度で焼き込みます。\n" +
+                "オフにすると以前の方式 (シェーダーでテクセルごとに丸める) になります"), s.cleanEdges);
+            using (new EditorGUI.DisabledScope(!s.cleanEdges))
+            {
+                s.smoothness = EditorGUILayout.Slider(new GUIContent("整理の強さ",
+                    "上げるほど塗りムラや小さな色の島が消え、境界がなめらかになります。\n" +
+                    "模様や細かい書き込みまで消える時は下げてください"), s.smoothness, 0f, 1f);
+                s.labelScale = EditorGUILayout.IntPopup("境界の解像度", s.labelScale,
+                    new[] { "テクスチャと同じ", "2倍 (おすすめ)" }, new[] { 1, 2 });
+            }
+        }
+
+        static readonly GUIContent FlatnessLabel = new GUIContent("フラット度",
+            "1 = 完全にフラット。下げると元の塗りの濃淡 (グラデーションや筆のタッチ) が戻ります。\n" +
+            "色の境界の段差もやわらぎます。リアルタイムで反映されます");
+
+        void DrawFlatness()
+        {
+            if (_flat != null && _flat.HasProperty("_Flatness"))
+            {
+                EditorGUI.BeginChangeCheck();
+                float v = EditorGUILayout.Slider(FlatnessLabel, _flat.GetFloat("_Flatness"), 0f, 1f);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    Undo.RecordObject(_flat, "Flatness");
+                    _flat.SetFloat("_Flatness", v);
+                    SceneView.RepaintAll();
+                }
+                _settings.flatness = _flat.GetFloat("_Flatness");
+            }
+            else
+            {
+                _settings.flatness = EditorGUILayout.Slider(FlatnessLabel, _settings.flatness, 0f, 1f);
+            }
         }
 
         void RunExtract()

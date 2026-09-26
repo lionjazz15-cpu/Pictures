@@ -18,12 +18,14 @@ Runtime/PencilLineEffect.cs     カメラに付けるライン本体 (OnRenderIm
 Runtime/MaterialAdapter.cs      lilToon / MToon0 / MToon10 / 汎用 の差を吸収して読む
 Editor/AvatarConverterWindow.cs アバターを D&D → 全マテリアルを一括でフラット化 or アウトラインだけオフ (複製/バリアントを作る)
 Editor/OutlineUtil.cs           シェーダー側アウトラインのオフ
-Editor/PaletteBuilder.cs        パレット抽出の本体 (k-means++ in OKLab, 書き影の自動統合, MToon 影色)
+Editor/PaletteBuilder.cs        パレット抽出の本体 (k-means++ in OKLab, 書き影の自動統合, MToon 影色, 番号マップの書き出し)
+Editor/LabelMap.cs              境界の整理 (バイラテラル → 割り当て → 最頻値 + 島の除去 → 2倍に拡大 → ミップアトラス)。Unity API 不使用・Parallel.For
 Editor/FlatPaletteWindow.cs     1マテリアルのパレット調整 UI
 Editor/LilToonBaker.cs          lilToon の色調補正 + メイン2nd/3rd (デカール) を PNG に焼き込み
 Shaders/PencilLineGBuffer.shader  MRT: g0=(八面体法線xy, 線形深度, ID=obj*1024+mat) g1=(アルベド, パレット番号+1 (+64で線フラグ))
 Shaders/PencilLineEdge.shader     Pass0 検出 / Pass1 円形ダイレート(前後関係チェック) / Pass2 乗算済みでブレンド / Pass3 線だけ
-Shaders/FlatPalette.shader        パレットに丸めるフラットシェーダー (4テクセルを個別にスナップして補間)
+Shaders/FlatPalette.shader        フラットシェーダー。_LABELMAP_ON: 番号マップを 4 テクセル多数決で読む / なし: 4テクセルを個別にスナップして補間 (旧方式)
+Shaders/PencilLineCommon.cginc    八面体法線, OKLab, PL_SampleLabel (番号マップの読み出し)
 Shaders/LilToonBake.shader        焼き込み用
 ```
 
@@ -34,8 +36,15 @@ Shaders/LilToonBake.shader        焼き込み用
 - 線の種類と優先度: 外周7 > 内側輪郭6 > 交差5 > 材質境界4 > 折れ目3 > シワ(谷線)2 > テクスチャ線1。マテリアルごとのビットマスクで個別オフ。
 - 線の太さは `referenceHeight` (1080) 基準の px。内部はスーパーサンプリング倍率を掛けた解像度。
 - パレットテクスチャは 32×4 (RGBAFloat, linear): row0 元色OKLab / row1 ベース色 / row2 1影色 / row3 線フラグ。
+- 番号マップ `*_Labels.png`: 番号 (0〜31) をそのまま入れた PNG を Single Channel (R8)・Point・ミップなし・非圧縮でインポート。
+  番号は平均できないのでミップは 2x2 多数決で自前で作り、アトラスに並べる (左: ミップ0 W×H / 右 x=W: ミップ1,2… を下から積む)。
+  マテリアルの `_LabelSize` = (W, H, ミップ数, リピートなら1)。`.asset` にしないのは Force Text だと巨大になるため。
+- 整理は「似た色 (OKLab 距離 < maxDelta) どうし」だけで行う。線・模様など色差の大きい境界は形を保つ (細い線が消えないように)。
+- `_Flatness` < 1 で「元テクスチャの OKLab − パレット元色」を足し戻す (ソフトフラット)。
+- 検証環境 (クラウド): C# は Unity3D.SDK 2021.1 の参照 DLL で型チェック (Reinitialize と FindObjectsByType だけスタブ)、
+  LabelMap.cs は .NET で実行して結果を画像で確認、シェーダーは DXC + UnityCG のスタブでコンパイル確認。
 
-## ユーザーが気に入った線の設定 (次のバージョンの既定値にする)
+## ユーザーが気に入った線の設定 (既定値に反映済み)
 Supersampling 3, Editor Preview Supersampling 1, Reference Height 1080
 Outline 3.91 / Inner 3.64 / Intersection 3.59 / Material 3.59 / Crease 3.71 / Wrinkle 3.76 / Texture 0
 Line Color 黒, Color Trace 0, Color Trace Darkness 0.45, Saturation 1.3
@@ -44,16 +53,11 @@ Use Normal Maps on, Wrinkle Scale 1.33, Wrinkle Threshold 0.168, Texture Edge Th
 Emphasis 0.178, Min Strength 0, Strong Depth Ratio 0.01
 Distance Reduction on (near 2, far 20, min 0.473), Lit Side 0.772, Shadow Side 0.713
 
-一括変換で使っていた設定: 色の数 32, 色相の許容差 1, 明度差の上限 0.5 / 0.5 (自動統合をほぼ切っている)
+一括変換で使っていた設定: 色の数 32, 色相の許容差 1, 明度差の上限 0.5 / 0.5 (自動統合をほぼ切っている) → Avatar Converter の既定値に反映済み
 
 ## 次にやること
-1. **厚塗り・なめらかなグラデーションのモデルをフラット化するとジャギジャギになる問題** (最優先)
-   - 原因: 滑らかなグラデーションを k-means で丸めると、色の境目がノイズ混じりの等高線になり、テクセル単位でガタガタする。
-   - 方針案 (組み合わせる):
-     a. 丸める前にエッジ保存の平滑化 (バイラテラル / 桑原フィルタ) で塗りのムラを消す
-     b. パレット番号マップを作って最頻値フィルタ + 小さい島の除去で整理し、2倍解像度で焼き込んだ「フラット済みテクスチャ」を出力 (シェーダーは普通にサンプルするだけ → 境界もなめらか)
-     c. 「ソフトフラット」モード: 明度だけ段階化して色相・彩度はなめらかに残す、または近い2色を fwidth でなめらかに補間
-   - ユーザーに「どれくらいフラットにしたいか」を1つのスライダーで選べる形が理想。
-2. 上記の線設定を `PencilLineEffect` の既定値に反映。
-3. ユーザー未確認: シーンビュー表示、灰色の修正、Avatar Converter の結果、シワ線・テクスチャ線の出方。報告を受けたら直す。
-4. ユーザーが参考にしたいルックの X 投稿があるが、こちらからは閲覧できない。画像をもらって方向性を合わせる。
+1. **ユーザー確認待ち: 厚塗りのジャギー対策** (境界の整理 + 番号マップ + フラット度)。
+   - Unity でのコンパイル、見た目、処理時間 (2048px で数秒の想定)、`_Labels.png` のインポート設定 (R8 になっているか) を確認してもらう。
+   - 調整の余地: `LabelMap.ParamsFor` の強さの割り当て、`maxDelta` (似た色とみなす差)。模様が消える/ジャギーが残るの報告を見て直す。
+2. ユーザー未確認: シーンビュー表示、灰色の修正、Avatar Converter の結果、シワ線・テクスチャ線の出方。報告を受けたら直す。
+3. ユーザーが参考にしたいルックの X 投稿があるが、こちらからは閲覧できない。画像をもらって方向性を合わせる。

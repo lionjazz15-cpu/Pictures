@@ -44,7 +44,14 @@ namespace PencilLine.EditorTools
         bool _placeInScene = true;
         string _outputRoot = "Assets/PencilLine_Converted";
         bool _showFlatSettings;
-        readonly PaletteSettings _settings = new PaletteSettings();
+        // 一括変換の既定値 (色を多めに取り、書き影の自動統合はほぼ切る)
+        readonly PaletteSettings _settings = new PaletteSettings
+        {
+            clusterCount = 32,
+            hueTolerance = 1f,
+            maxLDiff = 0.5f,
+            maxLDiffAchromatic = 0.5f,
+        };
         readonly List<Row> _rows = new List<Row>();
         Vector2 _scroll;
         GameObject _lastResult;
@@ -85,6 +92,9 @@ namespace PencilLine.EditorTools
                     _settings.bakeScale = EditorGUILayout.IntPopup("焼き込み解像度", _settings.bakeScale,
                         new[] { "メインと同じ", "2倍" }, new[] { 1, 2 });
                     _settings.useMaterialShade = EditorGUILayout.Toggle("MToon の影色を使う", _settings.useMaterialShade);
+                    FlatPaletteWindow.DrawCleanEdgeSettings(_settings);
+                    _settings.flatness = EditorGUILayout.Slider(new GUIContent("フラット度",
+                        "1 = 完全にフラット。下げると元の塗りの濃淡が戻ります (変換後もマテリアルで変えられます)"), _settings.flatness, 0f, 1f);
                 }
             }
 
@@ -177,7 +187,7 @@ namespace PencilLine.EditorTools
                         {
                             if (GUILayout.Button("調整", EditorStyles.miniButton, GUILayout.Width(40)))
                             {
-                                FlatPaletteWindow.OpenWith(row.mat, row.result);
+                                FlatPaletteWindow.OpenWith(row.mat, row.result, _settings);
                             }
                         }
                         else

@@ -15,6 +15,10 @@ Shader "PencilLine/Flat Palette"
         _PaletteCount ("Palette Count", Float) = 0
         _WeightL ("Lightness Weight", Range(0, 4)) = 1
         _WeightC ("Chroma Weight", Range(0, 4)) = 1
+        [Toggle(_LABELMAP_ON)] _UseLabelMap ("Use Label Map (境界を整えた番号マップ)", Float) = 0
+        [NoScaleOffset] _LabelTex ("Label Map (generated)", 2D) = "black" {}
+        [HideInInspector] _LabelSize ("Label Map Size", Vector) = (1, 1, 1, 1)
+        _Flatness ("Flatness (0 = 元の塗りの濃淡を残す)", Range(0, 1)) = 1
 
         [Header(Shading)]
         [Enum(Flat, 0, Cel, 1)] _ShadeMode ("Shade Mode", Float) = 0
@@ -53,13 +57,17 @@ Shader "PencilLine/Flat Palette"
             #pragma target 4.5
             #pragma multi_compile_fwdbase
             #pragma shader_feature_local _PALETTE_ON
+            #pragma shader_feature_local _LABELMAP_ON
             #pragma shader_feature_local _ALPHATEST_ON
             #include "Lighting.cginc"
             #include "AutoLight.cginc"
             #include "PencilLineCommon.cginc"
 
-            Texture2D<float4> _PaletteTex; // 32 x 3 : 元色(OKLab) / ベース色 / 1影色
+            Texture2D<float4> _PaletteTex; // 32 x 4 : 元色(OKLab) / ベース色 / 1影色 / 線フラグ
+            Texture2D<float> _LabelTex;    // 境界を整えたパレット番号マップ (ミップアトラス)
+            float4 _LabelSize;             // x,y: ミップ0の大きさ z: ミップの数 w: リピートなら1
             float _PaletteCount;
+            float _Flatness;
             float _WeightL;
             float _WeightC;
             float _ShadeMode;
@@ -95,8 +103,8 @@ Shader "PencilLine/Flat Palette"
                 return o;
             }
 
-            // 一番近いパレット色を探して、その出力色 (ベース / 1影) を返す
-            void Snap(float3 lin, out float3 baseCol, out float3 shadeCol)
+            // 一番近いパレット色を探して、その出力色 (ベース / 1影) と元色 (OKLab) を返す
+            void Snap(float3 lin, out float3 baseCol, out float3 shadeCol, out float3 centerLab)
             {
                 float3 lab = PL_LinearToOklab(lin);
                 int count = (int)_PaletteCount;
@@ -113,13 +121,15 @@ Shader "PencilLine/Flat Palette"
                         bi = k;
                     }
                 }
+                centerLab = _PaletteTex.Load(int3(bi, 0, 0)).xyz;
                 baseCol = _PaletteTex.Load(int3(bi, 1, 0)).rgb;
                 shadeCol = _PaletteTex.Load(int3(bi, 2, 0)).rgb;
             }
 
             // 周囲4テクセルをそれぞれパレット化してから補間する
             // (色の境目に中間色のフチが出ないようにするため)
-            float4 SampleFlat(float2 uv, out float3 shadeCol)
+            // (番号マップがない古いフラット版用)
+            float4 SampleFlat(float2 uv, out float3 shadeCol, out float3 centerLab)
             {
                 float2 texSize = _MainTex_TexelSize.zw;
                 float2 dx = ddx(uv * texSize);
@@ -132,6 +142,7 @@ Shader "PencilLine/Flat Palette"
 
                 float4 acc = float4(0, 0, 0, 0);
                 float3 sacc = float3(0, 0, 0);
+                float3 cacc = float3(0, 0, 0);
                 [unroll]
                 for (int k = 0; k < 4; k++)
                 {
@@ -140,14 +151,36 @@ Shader "PencilLine/Flat Palette"
                     float4 t = tex2Dlod(_MainTex, float4(cuv, 0, lod));
                     float3 bc;
                     float3 sc;
-                    Snap(t.rgb, bc, sc);
+                    float3 cl;
+                    Snap(t.rgb, bc, sc, cl);
                     float2 wv = lerp(1.0 - f, f, o);
                     float wgt = wv.x * wv.y;
                     acc += float4(bc, t.a) * wgt;
                     sacc += sc * wgt;
+                    cacc += cl * wgt;
                 }
                 shadeCol = sacc;
+                centerLab = cacc;
                 return acc;
+            }
+
+            // 境界を整えた番号マップから色を決める (境界だけ 2 色をなめらかに補間)
+            float3 SampleLabelFlat(float2 uv, out float3 shadeCol, out float3 centerLab)
+            {
+                PL_Label lb = PL_SampleLabel(_LabelTex, _LabelSize, uv, ddx(uv), ddy(uv));
+                int last = max((int)_PaletteCount, 1) - 1;
+                int a = min(lb.best, last);
+                int b = min(lb.second, last);
+                float t = lb.blend;
+                centerLab = lerp(_PaletteTex.Load(int3(b, 0, 0)).xyz, _PaletteTex.Load(int3(a, 0, 0)).xyz, t);
+                shadeCol = lerp(_PaletteTex.Load(int3(b, 2, 0)).rgb, _PaletteTex.Load(int3(a, 2, 0)).rgb, t);
+                return lerp(_PaletteTex.Load(int3(b, 1, 0)).rgb, _PaletteTex.Load(int3(a, 1, 0)).rgb, t);
+            }
+
+            // フラット度 < 1 なら、元の塗りの濃淡 (パレットの元色からのずれ) を OKLab で足し戻す
+            float3 AddPaintDetail(float3 col, float3 detailLab)
+            {
+                return max(PL_OklabToLinear(PL_LinearToOklab(col) + detailLab), 0.0);
             }
 
             float4 frag(v2f i, float facing : VFACE) : SV_Target
@@ -157,9 +190,22 @@ Shader "PencilLine/Flat Palette"
                 float alpha;
 
             #if defined(_PALETTE_ON)
-                float4 fs = SampleFlat(i.uv, shadeCol);
+                float3 centerLab;
+                float4 raw = tex2D(_MainTex, i.uv);
+              #if defined(_LABELMAP_ON)
+                baseCol = SampleLabelFlat(i.uv, shadeCol, centerLab);
+                alpha = raw.a * _Color.a;
+              #else
+                float4 fs = SampleFlat(i.uv, shadeCol, centerLab);
                 baseCol = fs.rgb;
                 alpha = fs.a * _Color.a;
+              #endif
+                if (_Flatness < 0.999)
+                {
+                    float3 detail = (PL_LinearToOklab(raw.rgb) - centerLab) * (1.0 - _Flatness);
+                    baseCol = AddPaintDetail(baseCol, detail);
+                    shadeCol = AddPaintDetail(shadeCol, detail);
+                }
             #else
                 float4 t = tex2D(_MainTex, i.uv) * _Color;
                 baseCol = t.rgb;

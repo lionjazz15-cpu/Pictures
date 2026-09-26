@@ -35,7 +35,7 @@ namespace PencilLine
         [Header("見た目")]
         [Range(0f, 4f)] public float widthMultiplier = 1f;
         public bool overrideColor = false;
-        [ColorUsage(false)] public Color color = new Color(0.12f, 0.08f, 0.08f, 1f);
+        [ColorUsage(false)] public Color color = Color.black;
         public bool overrideColorTrace = false;
         [Range(0f, 1f)] public float colorTrace = 0f;
         [Tooltip("半透明マテリアルでも線の対象にする (アルファ0.5で切り抜き)")]
@@ -61,26 +61,26 @@ namespace PencilLine
 
         [Header("出力")]
         public LineOutputMode outputMode = LineOutputMode.Composite;
-        [Tooltip("Play中/書き出し時の内部解像度倍率。2で十分きれい、4は重い")]
-        [Range(1, 4)] public int supersampling = 2;
+        [Tooltip("Play中/書き出し時の内部解像度倍率。3 がおすすめ、4は重い")]
+        [Range(1, 4)] public int supersampling = 3;
         [Tooltip("エディタ上 (非Play) のプレビュー用倍率")]
         [Range(1, 4)] public int editorPreviewSupersampling = 1;
         [Tooltip("線の太さはこの高さ(px)の画面を基準に指定します。4Kで出しても見た目の太さが変わりません")]
         public float referenceHeight = 1080f;
 
         [Header("線の太さ (基準解像度でのpx)")]
-        [Range(0f, 10f)] public float outlineWidth = 2.6f;
-        [Range(0f, 10f)] public float innerWidth = 1.8f;
-        [Range(0f, 10f)] public float intersectionWidth = 1.5f;
-        [Range(0f, 10f)] public float materialWidth = 1.2f;
-        [Range(0f, 10f)] public float creaseWidth = 1.0f;
+        [Range(0f, 10f)] public float outlineWidth = 3.91f;
+        [Range(0f, 10f)] public float innerWidth = 3.64f;
+        [Range(0f, 10f)] public float intersectionWidth = 3.59f;
+        [Range(0f, 10f)] public float materialWidth = 3.59f;
+        [Range(0f, 10f)] public float creaseWidth = 3.71f;
         [Tooltip("服のシワなど、へこんだ所に出る線")]
-        [Range(0f, 10f)] public float wrinkleWidth = 1.0f;
+        [Range(0f, 10f)] public float wrinkleWidth = 3.76f;
         [Tooltip("フラット版の書き影の輪郭や、テクスチャの色の境目に出る線")]
-        [Range(0f, 10f)] public float textureWidth = 1.0f;
+        [Range(0f, 10f)] public float textureWidth = 0f;
 
         [Header("線の色")]
-        [ColorUsage(false)] public Color lineColor = new Color(0.12f, 0.08f, 0.08f, 1f);
+        [ColorUsage(false)] public Color lineColor = Color.black;
         [Tooltip("0=線色そのまま / 1=面の色を暗くした色 (色トレス)")]
         [Range(0f, 1f)] public float colorTrace = 0f;
         [Tooltip("MToon / lilToon のアウトライン色 (_OutlineColor) を線色として使う")]
@@ -92,19 +92,19 @@ namespace PencilLine
 
         [Header("検出")]
         [Tooltip("内側輪郭の感度。小さいほど線が増える")]
-        [Range(0f, 0.2f)] public float depthThreshold = 0.01f;
+        [Range(0f, 0.2f)] public float depthThreshold = 0.0322f;
         [Tooltip("斜めの面で線が出すぎる時は上げる")]
-        [Range(0.5f, 8f)] public float depthSlopeBias = 2f;
+        [Range(0.5f, 8f)] public float depthSlopeBias = 1.78f;
         [Tooltip("この角度以上の法線の折れで線を引く")]
-        [Range(0f, 180f)] public float creaseAngle = 50f;
+        [Range(0f, 180f)] public float creaseAngle = 85.5f;
 
         [Header("シワ (谷線)")]
         [Tooltip("ノーマルマップも見てシワを探す (線の強弱の向きにも使われます)")]
         public bool useNormalMaps = true;
         [Tooltip("どのくらいの幅のへこみを探すか (基準解像度でのpx)。大きいほど大きなシワだけ拾う")]
-        [Range(1f, 12f)] public float wrinkleScale = 3f;
+        [Range(1f, 12f)] public float wrinkleScale = 1.33f;
         [Tooltip("へこみの深さのしきい値。大きいほど深いシワだけ")]
-        [Range(0.02f, 1f)] public float wrinkleThreshold = 0.25f;
+        [Range(0.02f, 1f)] public float wrinkleThreshold = 0.168f;
 
         [Header("テクスチャ線")]
         [Tooltip("フラット化していないマテリアルで、テクスチャの色の差がこれ以上の所に線を引く (0でオフ)")]
@@ -112,23 +112,23 @@ namespace PencilLine
 
         [Header("強弱と間引き (欲しい線だけ残す)")]
         [Tooltip("0=全部同じ太さ / 1=強い線は太く、弱い線は細く")]
-        [Range(0f, 1f)] public float emphasis = 0.5f;
+        [Range(0f, 1f)] public float emphasis = 0.178f;
         [Tooltip("これより弱い線は描かない。上げるほど大事な線だけ残る")]
         [Range(0f, 1f)] public float minStrength = 0f;
         [Tooltip("奥行きの段差がこの割合 (カメラからの距離比) 以上なら『強い線』とみなす")]
-        [Range(0.01f, 0.5f)] public float strongDepthRatio = 0.1f;
+        [Range(0.01f, 0.5f)] public float strongDepthRatio = 0.01f;
 
         [Header("距離で細く (Reduction)")]
-        public bool distanceReduction = false;
+        public bool distanceReduction = true;
         public float reductionNear = 2f;
         public float reductionFar = 20f;
-        [Range(0f, 1f)] public float reductionMinScale = 0.3f;
+        [Range(0f, 1f)] public float reductionMinScale = 0.473f;
 
         [Header("光で強弱 (影側を太く)")]
         [Tooltip("未指定なら RenderSettings.sun → シーン内のDirectional Light")]
         public Light keyLight;
-        [Range(0f, 3f)] public float litSideScale = 1f;
-        [Range(0f, 3f)] public float shadowSideScale = 1f;
+        [Range(0f, 3f)] public float litSideScale = 0.772f;
+        [Range(0f, 3f)] public float shadowSideScale = 0.713f;
 
         [Header("材質ごとの設定")]
         public List<MaterialLineOverride> materialOverrides = new List<MaterialLineOverride>();
@@ -178,6 +178,9 @@ namespace PencilLine
             public static readonly int PaletteTex = Shader.PropertyToID("_PL_PaletteTex");
             public static readonly int PaletteCount = Shader.PropertyToID("_PL_PaletteCount");
             public static readonly int PaletteWeights = Shader.PropertyToID("_PL_PaletteWeights");
+            public static readonly int LabelTex = Shader.PropertyToID("_PL_LabelTex");
+            public static readonly int UseLabel = Shader.PropertyToID("_PL_UseLabel");
+            public static readonly int LabelSize = Shader.PropertyToID("_PL_LabelSize");
             public static readonly int Widths2 = Shader.PropertyToID("_PL_Widths2");
             public static readonly int Wrinkle = Shader.PropertyToID("_PL_Wrinkle");
             public static readonly int TexEdge = Shader.PropertyToID("_PL_TexEdge");
@@ -384,6 +387,10 @@ namespace PencilLine
                     _cmd.SetGlobalTexture(P.PaletteTex, pal ? info.paletteTex : Texture2D.blackTexture);
                     _cmd.SetGlobalFloat(P.PaletteCount, pal ? info.paletteCount : 0f);
                     _cmd.SetGlobalVector(P.PaletteWeights, new Vector4(info.paletteWeightL, info.paletteWeightC, 0f, 0f));
+                    bool label = pal && info.labelTex != null;
+                    _cmd.SetGlobalTexture(P.LabelTex, label ? info.labelTex : Texture2D.blackTexture);
+                    _cmd.SetGlobalFloat(P.UseLabel, label ? 1f : 0f);
+                    _cmd.SetGlobalVector(P.LabelSize, label ? info.labelSize : Vector4.one);
 
                     _cmd.DrawRenderer(r, _gbufferMat, s, 0);
                 }

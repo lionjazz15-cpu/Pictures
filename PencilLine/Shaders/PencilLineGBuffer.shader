@@ -37,6 +37,9 @@ Shader "Hidden/PencilLine/GBuffer"
             Texture2D<float4> _PL_PaletteTex; // row0: OKLab  row3: x=線フラグ
             float _PL_PaletteCount;
             float4 _PL_PaletteWeights;        // x: 明度の重み y: 色みの重み
+            Texture2D<float> _PL_LabelTex;    // 境界を整えたパレット番号マップ (あればこちらを使う)
+            float4 _PL_LabelSize;
+            float _PL_UseLabel;
 
             struct appdata
             {
@@ -96,8 +99,23 @@ Shader "Hidden/PencilLine/GBuffer"
                 return (float)(bi + 1) + (flag > 0.5 ? 64.0 : 0.0);
             }
 
+            // 番号マップから (フラット版の見た目と同じ境界になる)
+            float PL_LabelCode(float2 uv, float2 duvdx, float2 duvdy)
+            {
+                int count = (int)_PL_PaletteCount;
+                if (count <= 0) return 0.0;
+                PL_Label lb = PL_SampleLabel(_PL_LabelTex, _PL_LabelSize, uv, duvdx, duvdy);
+                int bi = min(lb.best, count - 1);
+                float flag = _PL_PaletteTex.Load(int3(bi, 3, 0)).x;
+                return (float)(bi + 1) + (flag > 0.5 ? 64.0 : 0.0);
+            }
+
             FragOut frag(v2f i)
             {
+                // 微分は discard より前に取っておく
+                float2 duvdx = ddx(i.uv.xy);
+                float2 duvdy = ddy(i.uv.xy);
+
                 // 画面上の面の向き (ジオメトリ法線) をカメラ側に向けて求める
                 float3 cr = cross(ddy(i.viewPos), ddx(i.viewPos));
                 float3 geoN = cr * rsqrt(max(dot(cr, cr), 1e-30));
@@ -132,7 +150,10 @@ Shader "Hidden/PencilLine/GBuffer"
 
                 FragOut o;
                 o.g0 = float4(PL_EncodeNormal(n), -i.viewPos.z, _PL_ID);
-                o.g1 = float4(tex.rgb, PL_PaletteCode(raw.rgb));
+                float code;
+                if (_PL_UseLabel > 0.5) code = PL_LabelCode(i.uv.xy, duvdx, duvdy);
+                else code = PL_PaletteCode(raw.rgb);
+                o.g1 = float4(tex.rgb, code);
                 return o;
             }
             ENDCG
