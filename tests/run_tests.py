@@ -427,6 +427,63 @@ def test_rough_cage():
                       and mu.mesh_coords(w.data)[:, 0].min() > -1e-6)
 
 
+def make_hips():
+    """Hips with buttocks and two legs (a crotch and a buttock crease)."""
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=48, ring_count=24, radius=1)
+    t = bpy.context.active_object
+    t.scale, t.location = (0.16, 0.11, 0.3), (0, 0, 0.45)
+    bpy.ops.object.transform_apply(location=True, scale=True)
+    for x in (-0.08, 0.08):
+        bpy.ops.mesh.primitive_cylinder_add(vertices=32, radius=0.07, depth=0.75, location=(x, 0, -0.02))
+    for x in (-0.07, 0.07):
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=16, radius=0.085, location=(x, 0.045, 0.3))
+    for o in bpy.context.scene.objects:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = t
+    bpy.ops.object.join()
+    body = bpy.context.active_object
+    body.name = "Body"
+    r = body.modifiers.new("R", "REMESH")
+    r.voxel_size = 0.01
+    bpy.ops.object.modifier_apply(modifier="R")
+    sm = body.modifiers.new("S", "SMOOTH")
+    sm.factor, sm.iterations = 0.5, 6
+    bpy.ops.object.modifier_apply(modifier="S")
+    body.modifiers.new("Subdivision", "SUBSURF").levels = 1
+    return body
+
+
+def test_rough_cage_hips():
+    """A shorts-like cage around the hips: no strips running down a leg, no
+    slit along the crotch."""
+    import bmesh
+    reset()
+    body = make_hips()
+    bpy.ops.mesh.primitive_cylinder_add(vertices=10, radius=1, depth=1, end_fill_type="NOTHING")
+    cage = bpy.context.active_object
+    bm = bmesh.new()
+    bm.from_mesh(cage.data)
+    bmesh.ops.subdivide_edges(bm, edges=[e for e in bm.edges if abs(e.verts[0].co.z - e.verts[1].co.z) > 0.5],
+                              cuts=2)
+    bm.to_mesh(cage.data)
+    bm.free()
+    cage.scale, cage.location = (0.25, 0.2, 0.2), (0, 0, 0.32)
+    bpy.ops.object.transform_apply(location=True, scale=True)
+    s = bpy.context.scene.precision_shrinkwrap
+    s.target = body
+    s.offset = 0.001
+    s.transfer_mode = "APPLIED"
+    bpy.ops.object.select_all(action="DESELECT")
+    cage.select_set(True)
+    bpy.context.view_layer.objects.active = cage
+    assert bpy.ops.precision_shrinkwrap.conform_rough_cage() == {"FINISHED"}
+    w = bpy.context.active_object
+    W = eval_world(w)
+    check("rough cage hips: stays within the cage height", W[:, 2].min() > 0.2 and W[:, 2].max() < 0.44,
+          f"z {W[:, 2].min():.3f}..{W[:, 2].max():.3f} (cage 0.22..0.42)")
+    check("rough cage hips: no holes", border_loops(w) <= 3, f"{border_loops(w)} loops")
+
+
 def test_slide_and_retransfer():
     reset()
     body = make_torso(True)
@@ -519,7 +576,7 @@ def test_errors_are_explained():
 if __name__ == "__main__":
     for t in (test_fit_vs_stock, test_tension, test_fit_subdivided_garment, test_fit_mirrored_garment,
               test_transfer_applied_exact, test_transfer_subdiv, test_transfer_copy_only,
-              test_rough_cage, test_slide_and_retransfer, test_live_offset, test_errors_are_explained):
+              test_rough_cage, test_rough_cage_hips, test_slide_and_retransfer, test_live_offset, test_errors_are_explained):
         print(f"== {t.__name__}")
         t()
     print("FAILED: " + ", ".join(FAILS) if FAILS else "ALL PASSED")
