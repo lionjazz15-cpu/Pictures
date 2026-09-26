@@ -1,0 +1,14 @@
+schema_version = "1.0.0"
+
+id = "precision_shrinkwrap"
+version = "1.0.0"
+name = "Precision Shrinkwrap"
+tagline = "Even offset shrinkwrap for tight clothing with exact topology transfer"
+maintainer = "lionjazz15"
+type = "add-on"
+
+tags = ["Mesh", "Modeling"]
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
