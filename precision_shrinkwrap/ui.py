@@ -70,6 +70,10 @@ class PSW_PT_transfer(bpy.types.Panel):
 
         col = layout.column()
         col.prop(s, "transfer_mode")
+        col.prop(s, "transfer_fit")
+        sub = col.column()
+        sub.active = s.transfer_fit
+        sub.prop(s, "offset")
         col.prop(s, "region")
         if s.region == "VERTEX_GROUP" and s.target is not None:
             col.prop_search(s, "region_group", s.target, "vertex_groups")

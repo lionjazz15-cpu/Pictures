@@ -68,6 +68,10 @@ class PSW_Settings(bpy.types.PropertyGroup):
                 "Copy the subdivided mesh itself: vertices coincide exactly with the "
                 "subdivided body (offset 0) or sit exactly on the offset surface")],
         default="SUBDIV")
+    transfer_fit: BoolProperty(
+        name="Fit to Body", default=True,
+        description="Place the new mesh at the offset from the body. Turn off to only copy "
+                    "the topology as it is (e.g. for loose clothing shaped afterwards)")
     region: EnumProperty(
         name="Region",
         items=[("SELECTED", "Selected Faces", "Faces selected in Edit Mode"),

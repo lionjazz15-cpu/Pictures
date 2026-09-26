@@ -76,20 +76,23 @@ class PSW_OT_transfer_topology(bpy.types.Operator):
             self.report({"ERROR"}, "No faces in the region")
             return {"CANCELLED"}
 
-        surface = mu.target_surface(context, body)
+        # Without "Fit to Body" the region is only copied (useful for loose
+        # clothing that is shaped by hand or fitted to another object later).
+        fit = s.transfer_fit and (s.transfer_mode == "SUBDIV" or s.offset > 0.0)
+        surface = mu.target_surface(context, body) if fit else None
         progress = fitting.Progress(context)
         try:
             if s.transfer_mode == "SUBDIV":
                 obj = self._copy_cage(context, s, body, keep)
-                new, err = fitting.fit_object(context, obj, surface, s, "NORMAL", progress)
-                mu.write_result(obj, new, "APPLY")
-                msg = f"Created '{obj.name}' (cage residual {err:.2e})"
+                msg = f"Created '{obj.name}' ({len(obj.data.vertices)} cage vertices)"
             else:
                 obj = self._copy_applied(context, s, body, keep)
-                if s.offset > 0.0:
-                    new, _ = fitting.fit_object(context, obj, surface, s, "NORMAL", progress)
-                    mu.write_result(obj, new, "APPLY")
                 msg = f"Created '{obj.name}' ({len(obj.data.vertices)} vertices)"
+            if fit:
+                new, err = fitting.fit_object(context, obj, surface, s, "NORMAL", progress)
+                mu.write_result(obj, new, "APPLY")
+                if s.transfer_mode == "SUBDIV":
+                    msg += f", cage residual {err:.2e}"
         except RuntimeError as e:
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}

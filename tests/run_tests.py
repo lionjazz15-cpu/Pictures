@@ -260,9 +260,47 @@ def test_transfer_subdiv():
     check("subdiv transfer: nothing inside", (sd > 0).all(), f"min {sd.min():.4f}")
 
 
+def _nearest_distances(A, B):
+    from mathutils.kdtree import KDTree
+    kd = KDTree(len(B))
+    for i, p in enumerate(B):
+        kd.insert(p, i)
+    kd.balance()
+    return np.array([kd.find(p)[2] for p in A])
+
+
+def test_transfer_copy_only():
+    """Fit to Body off: the topology is copied as is, even with an offset set."""
+    reset()
+    body = make_body(subdiv=2)
+    sel = select_back_faces(body)
+    s = bpy.context.scene.precision_shrinkwrap
+    s.target = body
+    s.offset = 0.01
+    s.transfer_fit = False
+
+    s.transfer_mode = "SUBDIV"
+    assert bpy.ops.precision_shrinkwrap.transfer_topology() == {"FINISHED"}
+    wear = bpy.context.active_object
+    cage = mu.mesh_coords(wear.data)
+    d = _nearest_distances(cage, mu.mesh_coords(body.data))
+    check("copy only (subdiv): cage identical to the body cage", d.max() == 0.0, f"max {d.max():.1e}")
+    n_region = len({v for p, k in zip(body.data.polygons, sel) if k for v in p.vertices})
+    check("copy only (subdiv): region vertex count", len(cage) == n_region, f"{len(cage)} / {n_region}")
+    check("copy only (subdiv): keeps subdivision modifier", any(m.type == "SUBSURF" for m in wear.modifiers))
+
+    s.transfer_mode = "APPLIED"
+    bpy.ops.object.select_all(action="DESELECT")
+    bpy.context.view_layer.objects.active = body
+    assert bpy.ops.precision_shrinkwrap.transfer_topology() == {"FINISHED"}
+    wear2 = bpy.context.active_object
+    d = _nearest_distances(mu.to_world(mu.mesh_coords(wear2.data), wear2.matrix_world), eval_world(body))
+    check("copy only (applied): vertices coincide with the subdivided body", d.max() == 0.0, f"max {d.max():.1e}")
+
+
 if __name__ == "__main__":
     for t in (test_fit_vs_stock, test_fit_subdivided_garment, test_fit_mirrored_garment,
-              test_transfer_applied_exact, test_transfer_subdiv):
+              test_transfer_applied_exact, test_transfer_subdiv, test_transfer_copy_only):
         print(f"== {t.__name__}")
         t()
     print("FAILED: " + ", ".join(FAILS) if FAILS else "ALL PASSED")

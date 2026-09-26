@@ -60,6 +60,10 @@ _ja = {
     "Copy the subdivided mesh itself: vertices coincide exactly with the "
     "subdivided body (offset 0) or sit exactly on the offset surface":
         "分割後のメッシュそのものをコピー。オフセット0なら分割後の素体と頂点が完全一致",
+    "Fit to Body": "素体にフィット",
+    "Place the new mesh at the offset from the body. Turn off to only copy "
+    "the topology as it is (e.g. for loose clothing shaped afterwards)":
+        "新しいメッシュを素体からオフセット位置に配置する。オフにするとトポロジーをそのままコピーするだけ（ゆったりした服など、後で形を作る場合）",
     "Region": "範囲",
     "Selected Faces": "選択面",
     "Faces selected in Edit Mode": "編集モードで選択した面",
