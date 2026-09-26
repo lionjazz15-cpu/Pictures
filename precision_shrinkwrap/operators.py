@@ -42,8 +42,10 @@ class PSW_OT_fit(bpy.types.Operator):
         try:
             for i, obj in enumerate(garments):
                 sub = (lambda f, i=i: progress((i + f) / len(garments)))
-                new, err = fitting.fit_object(context, obj, surface, s, "NEAREST", sub)
+                new, err, dirs = fitting.fit_object(context, obj, surface, s, "NEAREST", sub)
                 mu.write_result(obj, new, s.output)
+                if s.live_offset:
+                    mu.set_live_offset(obj, dirs, s.offset)
         except RuntimeError as e:
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
@@ -191,10 +193,15 @@ def create_from_region(context, s, body, keep, name, progress=None, smooth=0):
         on_body = mu.target_surface(context, body) if s.transfer_mode == "APPLIED" else None
         fitting.smooth_boundary(obj, smooth, on_body)
     if fit:
-        new, err = fitting.fit_object(context, obj, surface, s, "NORMAL", progress)
+        new, err, dirs = fitting.fit_object(context, obj, surface, s, "NORMAL", progress)
         mu.write_result(obj, new, "APPLY")
         if s.transfer_mode == "SUBDIV":
             msg += f", cage residual {err:.2e}"
+        if s.live_offset:
+            mu.set_live_offset(obj, dirs, s.offset)
+    elif s.live_offset:
+        # lies on the body: the live offset starts from 0 along the normals
+        mu.set_live_offset(obj, fitting.normal_directions(obj), 0.0)
     return obj, msg
 
 
@@ -347,6 +354,108 @@ class PSW_OT_conform_rough_cage(bpy.types.Operator):
         return {"FINISHED"}
 
 
+SLIDE_MOD = "PSW Slide"
+
+
+def _slide_modifier(obj):
+    m = obj.modifiers.get(SLIDE_MOD) if obj is not None else None
+    return m if m is not None and m.type == "SHRINKWRAP" else None
+
+
+class PSW_OT_slide_start(bpy.types.Operator):
+    """Edit the fitted garment with its vertices sliding on the body surface:
+    move them in Edit Mode (proportional editing works well), then press
+    Confirm to rebuild the garment from the body's topology"""
+    bl_idname = "precision_shrinkwrap.slide_start"
+    bl_label = "Slide on Body"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        s = _settings(context)
+        obj = context.active_object
+        return (s.target is not None and obj is not None and obj.type == "MESH"
+                and obj != s.target and _slide_modifier(obj) is None)
+
+    def execute(self, context):
+        s = _settings(context)
+        obj = context.active_object
+        _ensure_object_mode(context)
+        m = obj.modifiers.new(SLIDE_MOD, "SHRINKWRAP")
+        m.target = s.target
+        m.wrap_method = "NEAREST_SURFACEPOINT"
+        m.wrap_mode = "OUTSIDE_SURFACE"
+        m.offset = s.offset
+        m.show_in_editmode = True
+        m.show_on_cage = True
+        obj.modifiers.move(len(obj.modifiers) - 1, 0)
+        bpy.ops.object.mode_set(mode="EDIT")
+        self.report({"INFO"}, "Move vertices; they slide on the body. Then press Confirm")
+        return {"FINISHED"}
+
+
+class PSW_OT_slide_confirm(bpy.types.Operator):
+    """Take the slid shape as the new region and rebuild the garment from the
+    body's topology (exact match / exact offset again)"""
+    bl_idname = "precision_shrinkwrap.slide_confirm"
+    bl_label = "Confirm and Re-transfer"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return _settings(context).target is not None and _slide_modifier(context.active_object) is not None
+
+    def execute(self, context):
+        s = _settings(context)
+        body = s.target
+        old = context.active_object
+        _ensure_object_mode(context)
+        progress = fitting.Progress(context)
+        try:
+            keep = rough_cage.region(context, body, old, s.cage_coverage,
+                                     progress=lambda f: progress(0.5 * f))
+            if not keep.any():
+                raise ValueError(f"'{old.name}' no longer covers '{body.name}'")
+            obj, msg = create_from_region(context, s, body, keep, old.name + "_tmp",
+                                          lambda f: progress(0.5 + 0.5 * f), smooth=s.boundary_smooth)
+        except (ValueError, RuntimeError) as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
+        finally:
+            progress.end()
+        obj.data.materials.clear()
+        for mat in old.data.materials:
+            obj.data.materials.append(mat)
+        if len(old.data.materials):
+            obj.data.polygons.foreach_set("material_index", np.zeros(len(obj.data.polygons), np.int32))
+        name, old_mesh = old.name, old.data
+        bpy.data.objects.remove(old, do_unlink=True)
+        if old_mesh.users == 0:
+            bpy.data.meshes.remove(old_mesh)
+        obj.name = name
+        obj.data.name = name
+        _make_active(context, obj)
+        self.report({"INFO"}, msg.replace(name + "_tmp", name))
+        return {"FINISHED"}
+
+
+class PSW_OT_slide_cancel(bpy.types.Operator):
+    """Stop sliding on the body and keep the garment as it was"""
+    bl_idname = "precision_shrinkwrap.slide_cancel"
+    bl_label = "Cancel Slide"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return _slide_modifier(context.active_object) is not None
+
+    def execute(self, context):
+        obj = context.active_object
+        _ensure_object_mode(context)
+        obj.modifiers.remove(_slide_modifier(obj))
+        return {"FINISHED"}
+
+
 class PSW_OT_check_offset(bpy.types.Operator):
     """Report the distance of the selected meshes (with modifiers, rest pose)
     to the target"""
@@ -371,4 +480,5 @@ class PSW_OT_check_offset(bpy.types.Operator):
         return {"FINISHED"}
 
 
-classes = (PSW_OT_fit, PSW_OT_transfer_topology, PSW_OT_conform_rough_cage, PSW_OT_check_offset)
+classes = (PSW_OT_fit, PSW_OT_transfer_topology, PSW_OT_conform_rough_cage, PSW_OT_slide_start,
+           PSW_OT_slide_confirm, PSW_OT_slide_cancel, PSW_OT_check_offset)

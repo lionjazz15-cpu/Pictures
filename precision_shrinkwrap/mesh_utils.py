@@ -62,7 +62,7 @@ def mesh_topology(me):
     loop_edges = np.empty(len(me.loops), dtype=np.int64)
     me.loops.foreach_get("edge_index", loop_edges)
     count = np.bincount(loop_edges, minlength=len(me.edges))
-    return solver.Topology(n, edges.reshape(-1, 2), count)
+    return solver.Topology(n, edges.reshape(-1, 2), count, mesh_triangles(me))
 
 
 def to_world(P, mat):
@@ -142,9 +142,10 @@ FACE_ID_ATTR = "_psw_body_face"
 
 
 def body_face_surface(context, body):
-    """The evaluated (rest pose) body as a Surface, plus for every triangle the
-    body cage face it comes from and which mirror copy it is on, and the
-    evaluated area of every (face, copy)."""
+    """The evaluated (rest pose) body as a Surface, plus per triangle: a key
+    ``face * 8 + mirror copy`` (which body cage face it comes from and which
+    mirror copy it is on), its world centre, unit normal and area; and the
+    evaluated area of every key."""
     me = body.data
     n_faces = len(me.polygons)
     a = me.attributes.new(FACE_ID_ATTR, "INT", "FACE")
@@ -184,10 +185,13 @@ def body_face_surface(context, body):
             side = 1.0 if cage[:, ax].mean() >= 0 else -1.0
             tri_side |= (center[:, ax] * side < 0).astype(np.int64) << k
     P = to_world(local, body.matrix_world)
-    area = 0.5 * np.linalg.norm(np.cross(P[tris[:, 1]] - P[tris[:, 0]], P[tris[:, 2]] - P[tris[:, 0]]), axis=1)
+    cross = np.cross(P[tris[:, 1]] - P[tris[:, 0]], P[tris[:, 2]] - P[tris[:, 0]])
+    length = np.linalg.norm(cross, axis=1)
+    area = 0.5 * length
+    normal = cross / np.maximum(length, 1e-30)[:, None]
     key = tri_face * 8 + tri_side
     key_area = np.bincount(key, weights=area, minlength=n_faces * 8)
-    return solver.Surface(P, tris), key, key_area
+    return solver.Surface(P, tris), key, key_area, P[tris].mean(axis=1), normal, area
 
 
 def mirror_locks(obj, cage):
@@ -489,6 +493,104 @@ def fit_cage(evaluator, targets_local, iterations=20, tol=1e-7):
             break
         C = evaluator.constrain(C + R)
     return C, err
+
+
+# ---------------------------------------------------------------------------
+# live offset (Geometry Nodes modifier)
+
+LIVE_MOD = "PSW Offset"
+LIVE_GROUP = "PSW Live Offset"
+DIR_ATTR = "psw_dir"
+FITTED_ATTR = "psw_fitted"
+
+
+def vectors_to_local(V, mat):
+    """World-space displacement vectors to the object's local space."""
+    M = np.array(mat, dtype=np.float64)[:3, :3]
+    return V @ np.linalg.inv(M).T
+
+
+def live_offset_group():
+    """Node group: position += psw_dir * (Offset - psw_fitted).
+
+    psw_dir is the offset direction of every vertex found by the fit (already
+    scaled by per-vertex offset weights), psw_fitted the offset it was fitted
+    at, so the result is unchanged at the fitted value and follows the slider
+    in real time."""
+    ng = bpy.data.node_groups.get(LIVE_GROUP)
+    if ng is not None and ng.bl_idname == "GeometryNodeTree":
+        return ng
+    ng = bpy.data.node_groups.new(LIVE_GROUP, "GeometryNodeTree")
+    iface = ng.interface
+    iface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    sock = iface.new_socket("Offset", in_out="INPUT", socket_type="NodeSocketFloat")
+    sock.subtype = "DISTANCE"
+    sock.default_value = 0.002
+    iface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    nodes, links = ng.nodes, ng.links
+    gi = nodes.new("NodeGroupInput")
+    go = nodes.new("NodeGroupOutput")
+    direction = nodes.new("GeometryNodeInputNamedAttribute")
+    direction.data_type = "FLOAT_VECTOR"
+    direction.inputs["Name"].default_value = DIR_ATTR
+    fitted = nodes.new("GeometryNodeInputNamedAttribute")
+    fitted.data_type = "FLOAT"
+    fitted.inputs["Name"].default_value = FITTED_ATTR
+    delta = nodes.new("ShaderNodeMath")
+    delta.operation = "SUBTRACT"
+    scale = nodes.new("ShaderNodeVectorMath")
+    scale.operation = "SCALE"
+    move = nodes.new("GeometryNodeSetPosition")
+    links.new(gi.outputs["Offset"], delta.inputs[0])
+    links.new(fitted.outputs["Attribute"], delta.inputs[1])
+    links.new(direction.outputs["Attribute"], scale.inputs[0])
+    links.new(delta.outputs[0], scale.inputs["Scale"])
+    links.new(gi.outputs["Geometry"], move.inputs["Geometry"])
+    links.new(scale.outputs["Vector"], move.inputs["Offset"])
+    links.new(move.outputs["Geometry"], go.inputs["Geometry"])
+    for node, x, y in ((gi, -700, 0), (direction, -700, -200), (fitted, -700, -380), (delta, -450, -250),
+                       (scale, -250, -200), (move, 0, 0), (go, 200, 0)):
+        node.location = (x, y)
+    return ng
+
+
+def live_offset_modifier(obj):
+    m = obj.modifiers.get(LIVE_MOD) if obj is not None else None
+    return m if m is not None and m.type == "NODES" else None
+
+
+def live_offset_identifier(ng):
+    return ng.interface.items_tree["Offset"].identifier
+
+
+def set_live_offset(obj, dir_local, fitted):
+    """Store the offset directions on the mesh and add / update the
+    "PSW Offset" modifier at the top of the stack (after a Slide on Body
+    modifier if there is one)."""
+    me = obj.data
+    n = len(me.vertices)
+    for name, dtype, key, data in ((DIR_ATTR, "FLOAT_VECTOR", "vector", np.asarray(dir_local, np.float64)),
+                                   (FITTED_ATTR, "FLOAT", "value", np.full(n, float(fitted)))):
+        a = me.attributes.get(name)
+        if a is not None and (a.data_type != dtype or a.domain != "POINT"):
+            me.attributes.remove(a)
+            a = None
+        if a is None:
+            a = me.attributes.new(name, dtype, "POINT")
+        a.data.foreach_set(key, data.ravel())
+    ng = live_offset_group()
+    m = live_offset_modifier(obj)
+    if m is None:
+        m = obj.modifiers.new(LIVE_MOD, "NODES")
+    m.node_group = ng
+    m[live_offset_identifier(ng)] = float(fitted)
+    m.show_in_editmode = True
+    index = 1 if len(obj.modifiers) > 1 and obj.modifiers[0].name == "PSW Slide" else 0
+    current = list(obj.modifiers).index(m)
+    if current != index:
+        obj.modifiers.move(current, index)
+    obj.update_tag()
+    me.update()
 
 
 # ---------------------------------------------------------------------------

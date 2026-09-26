@@ -52,6 +52,10 @@ class PSW_Settings(bpy.types.PropertyGroup):
     cage_iterations: IntProperty(
         name="Cage Fit Iterations", default=20, min=1, soft_max=100,
         description="Iterations used to solve the cage of a subdivided mesh")
+    live_offset: BoolProperty(
+        name="Live Offset Modifier", default=True,
+        description="Add a 'PSW Offset' modifier to the result: change its Offset and the garment "
+                    "follows in real time, like a standard modifier")
     output: EnumProperty(
         name="Output",
         items=[("SHAPE_KEY", "Shape Key", "Store the result as a new shape key"),

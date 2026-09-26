@@ -52,7 +52,8 @@ def _mirror_constraint(obj, cage0, mw):
 
 def fit_object(context, obj, surface, settings, start_mode="NEAREST", progress=None):
     """Fit ``obj`` onto ``surface``.  Returns (new cage coords in local space,
-    cage fit residual or 0.0).
+    cage fit residual or 0.0, per-vertex offset directions in local space for
+    the live offset modifier).
 
     start_mode:
         NEAREST - garment of arbitrary shape: start from its current position
@@ -83,6 +84,10 @@ def fit_object(context, obj, surface, settings, start_mode="NEAREST", progress=N
                 **_solve_kwargs(settings, surface, P0, offsets, start_mode))
             C, err = fit_subdiv_cage(ev, mu.to_local(P, mw), mw, surface, offsets,
                                      settings.cage_iterations)
+            # cage vertices follow their limit points (the first n rows)
+            n = len(cage0)
+            _, dirs, _ = surface.signed(P[:n])
+            scale = offsets[:n] / settings.offset if settings.offset > 0 else np.ones(n)
             if progress:
                 progress(1.0)
         finally:
@@ -100,9 +105,28 @@ def fit_object(context, obj, surface, settings, start_mode="NEAREST", progress=N
             constrain=_mirror_constraint(obj, cage0, mw),
             **_solve_kwargs(settings, surface, P0, offsets, start_mode))
         C, err = mu.to_local(P, mw), 0.0
+        _, dirs, _ = surface.signed(P)
+        scale = offsets / settings.offset if settings.offset > 0 else np.ones(len(P))
 
-    new = cage0 + np.clip(infl_cage, 0.0, 1.0)[:, None] * (C - cage0)
-    return new, err
+    w = np.clip(infl_cage, 0.0, 1.0)
+    new = cage0 + w[:, None] * (C - cage0)
+    return new, err, live_directions(obj, cage0, dirs * (scale * w)[:, None], mw)
+
+
+def live_directions(obj, cage0, dirs_world, mw):
+    """World offset directions -> local, with mirror-plane components zeroed."""
+    D = mu.vectors_to_local(dirs_world, mw)
+    for idx, ax in mu.mirror_locks(obj, cage0):
+        D[idx, ax] = 0.0
+    return D
+
+
+def normal_directions(obj):
+    """Offset directions from the mesh's own normals (for meshes lying on the
+    body that were not fitted)."""
+    mw = obj.matrix_world
+    N = mu.normals_to_world(mu.mesh_vertex_normals(obj.data), mw)
+    return live_directions(obj, mu.mesh_coords(obj.data), N, mw)
 
 
 def fit_subdiv_cage(ev, T_local, mw, surface, offsets, iterations):

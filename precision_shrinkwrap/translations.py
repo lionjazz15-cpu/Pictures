@@ -105,6 +105,25 @@ _ja = {
     "the cage only marks where the garment goes, the garment is built from the "
     "body's own topology":
         "雑なローポリケージから素体に完全一致する衣装を作る。ケージは範囲の指定だけに使い、衣装は素体のトポロジーで作る",
+    "Adjust after fitting": "フィット後の調整",
+    "Move vertices: they slide on the body": "頂点を動かすと素体の表面を滑ります",
+    "Slide on Body": "素体上で頂点調整",
+    "Confirm and Re-transfer": "確定して再転写",
+    "Cancel Slide": "調整をキャンセル",
+    "Edit the fitted garment with its vertices sliding on the body surface: "
+    "move them in Edit Mode (proportional editing works well), then press "
+    "Confirm to rebuild the garment from the body's topology":
+        "頂点が素体の表面を滑る状態で衣装を編集する。編集モードで頂点を動かし（プロポーショナル編集が便利）、確定を押すと素体のトポロジーで作り直す",
+    "Take the slid shape as the new region and rebuild the garment from the "
+    "body's topology (exact match / exact offset again)":
+        "調整した形を新しい範囲として、素体のトポロジーで衣装を作り直す（再び完全一致・正確なオフセット）",
+    "Stop sliding on the body and keep the garment as it was": "調整をやめて衣装を元のままにする",
+    "Move vertices; they slide on the body. Then press Confirm": "頂点を動かすと素体上を滑ります。終わったら確定を押してください",
+    "Live Offset Modifier": "リアルタイムオフセット",
+    "Add a 'PSW Offset' modifier to the result: change its Offset and the garment "
+    "follows in real time, like a standard modifier":
+        "結果に「PSW Offset」モディファイアを追加。オフセット値を変えると、標準モディファイアのようにリアルタイムで追従",
+    "Live Offset": "オフセット（リアルタイム）",
     # operators
     "Transfer Topology": "トポロジー転写",
     "Check Offset": "オフセット確認",

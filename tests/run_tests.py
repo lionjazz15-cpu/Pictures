@@ -124,16 +124,30 @@ def test_fit_vs_stock():
     check("fit: less stretch than stock shrinkwrap", st_ours[0] < st_stock[0] and st_ours[1] > st_stock[1])
     check("fit: no collapsed edges", st_ours[1] > 0.2, f"{st_ours[1]:.2f}")
 
-    # valley tension: bridged verts must still never be closer than the offset
-    s.tension = 20
-    s.output = "SHAPE_KEY"
+
+
+def test_tension():
+    """Valley tension: bridges the crease and is never closer than the offset."""
+    reset()
+    body = make_body()
+    g = make_garment()
+    s = bpy.context.scene.precision_shrinkwrap
+    s.target = body
+    s.offset = 0.003
+    s.output = "APPLY"
+    bpy.ops.object.select_all(action="DESELECT")
+    g.select_set(True)
+    P0 = mu.mesh_coords(g.data)
     assert bpy.ops.precision_shrinkwrap.fit() == {"FINISHED"}
-    kb = g.data.shape_keys.key_blocks[-1]
-    T = np.empty(len(kb.data) * 3)
-    kb.data.foreach_get("co", T)
-    _, _, sd_t = surf.signed(T.reshape(-1, 3))
+    follow = mu.mesh_coords(g.data)
+    mu.set_mesh_coords(g.data, P0)
+    s.tension = 20
+    assert bpy.ops.precision_shrinkwrap.fit() == {"FINISHED"}
+    surf = mu.target_surface(bpy.context, body)
+    _, _, sd_f = surf.signed(follow)
+    _, _, sd_t = surf.signed(mu.mesh_coords(g.data))
     check("tension: stays outside the offset", sd_t.min() > 0.003 - 1e-4, f"{sd_t.min():.5f}")
-    check("tension: bridges the valley", sd_t.max() > sd_ours.max() * 1.5, f"{sd_t.max():.4f}")
+    check("tension: bridges the valley", sd_t.max() > sd_f.max() * 1.5, f"{sd_t.max():.4f}")
 
 
 def test_fit_subdivided_garment():
@@ -353,6 +367,29 @@ def make_rough_band():
     return g
 
 
+def border_loops(obj):
+    """Number of open border loops of the evaluated object."""
+    import bmesh
+    dg = bpy.context.evaluated_depsgraph_get()
+    me = bpy.data.meshes.new_from_object(obj.evaluated_get(dg), depsgraph=dg)
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    edges = {e for e in bm.edges if e.is_boundary}
+    loops = 0
+    while edges:
+        loops += 1
+        stack = [edges.pop()]
+        while stack:
+            for v in stack.pop().verts:
+                for e in v.link_edges:
+                    if e in edges:
+                        edges.remove(e)
+                        stack.append(e)
+    bm.free()
+    bpy.data.meshes.remove(me)
+    return loops
+
+
 def test_rough_cage():
     for half in (False, True):
         for mode in ("APPLIED", "SUBDIV"):
@@ -380,12 +417,87 @@ def test_rough_cage():
             check(f"{label}: covers the band", W[:, 2].min() < 0.05 and W[:, 2].max() > 0.12
                   and W[:, 0].min() < -0.12 and W[:, 0].max() > 0.12,
                   f"z {W[:, 2].min():.3f}..{W[:, 2].max():.3f}")
+            check(f"{label}: one piece without holes (2 border loops)", border_loops(w) == 2,
+                  f"{border_loops(w)} loops")
             check(f"{label}: cage material, cage hidden",
                   w.data.materials[0].name == "Fabric" and cage.hide_get())
             if half:
                 check(f"{label}: output is a half with Mirror",
                       any(m.type == "MIRROR" for m in w.modifiers)
                       and mu.mesh_coords(w.data)[:, 0].min() > -1e-6)
+
+
+def test_slide_and_retransfer():
+    reset()
+    body = make_torso(True)
+    cage = make_rough_band()
+    s = bpy.context.scene.precision_shrinkwrap
+    s.target = body
+    s.offset = 0.001
+    s.transfer_mode = "APPLIED"
+    bpy.ops.object.select_all(action="DESELECT")
+    cage.select_set(True)
+    bpy.context.view_layer.objects.active = cage
+    assert bpy.ops.precision_shrinkwrap.conform_rough_cage() == {"FINISHED"}
+    w = bpy.context.active_object
+    name = w.name
+    top_before = eval_world(w)[:, 2].max()
+
+    assert bpy.ops.precision_shrinkwrap.slide_start() == {"FINISHED"}
+    check("slide: edit mode with slide modifier", bpy.context.mode == "EDIT_MESH"
+          and w.modifiers[0].name == "PSW Slide")
+    bpy.ops.object.mode_set(mode="OBJECT")
+    # pull the top border up by 2 cm (the modifier keeps it on the body)
+    P = mu.mesh_coords(w.data)
+    P[P[:, 2] > top_before - 0.01, 2] += 0.02
+    mu.set_mesh_coords(w.data, P)
+    bpy.ops.object.mode_set(mode="EDIT")
+    assert bpy.ops.precision_shrinkwrap.slide_confirm() == {"FINISHED"}
+    w2 = bpy.context.active_object
+    W = eval_world(w2)
+    _, _, sd = mu.target_surface(bpy.context, body).signed(W)
+    check("slide: garment rebuilt under the same name, material kept",
+          w2.name == name and w2.data.materials[0].name == "Fabric")
+    check("slide: no slide modifier left", all(m.name != "PSW Slide" for m in w2.modifiers))
+    check("slide: new border follows the edit", W[:, 2].max() > top_before + 0.012,
+          f"top {top_before:.3f} -> {W[:, 2].max():.3f}")
+    check("slide: exact offset again", np.abs(sd - 0.001).max() < 1e-4, f"{np.abs(sd - 0.001).max():.1e}")
+
+
+def _set_live(obj, value):
+    m = obj.modifiers["PSW Offset"]
+    m[mu.live_offset_identifier(m.node_group)] = value
+    obj.update_tag()
+
+
+def test_live_offset():
+    for mode, fit in (("APPLIED", True), ("SUBDIV", True), ("APPLIED", False)):
+        label = f"live offset ({mode.lower()}{'' if fit else ', copy only'})"
+        reset()
+        body = make_torso(True)
+        cage = make_rough_band()
+        s = bpy.context.scene.precision_shrinkwrap
+        s.target = body
+        s.offset = 0.001
+        s.transfer_mode = mode
+        s.transfer_fit = fit
+        bpy.ops.object.select_all(action="DESELECT")
+        cage.select_set(True)
+        bpy.context.view_layer.objects.active = cage
+        assert bpy.ops.precision_shrinkwrap.conform_rough_cage() == {"FINISHED"}
+        w = bpy.context.active_object
+        surf = mu.target_surface(bpy.context, body)
+        check(f"{label}: modifier added first", w.modifiers[0].name == "PSW Offset")
+        before = eval_world(w)
+        _set_live(w, 0.001 if fit else 0.0)
+        same = np.abs(eval_world(w) - before).max()
+        check(f"{label}: unchanged at the fitted value", same < 1e-6, f"{same:.1e}")
+        _set_live(w, 0.003)
+        _, _, sd = surf.signed(eval_world(w))
+        dev = np.abs(sd - 0.003)
+        allowed = 3e-4 if mode == "SUBDIV" else 1.5e-4
+        check(f"{label}: follows the slider (3 mm)", np.percentile(dev, 99) < allowed and sd.min() > 0.0025,
+              f"p99 {np.percentile(dev, 99):.1e} min {sd.min():.4f}")
 
 
 def test_errors_are_explained():
@@ -405,10 +517,13 @@ def test_errors_are_explained():
 
 
 if __name__ == "__main__":
-    for t in (test_fit_vs_stock, test_fit_subdivided_garment, test_fit_mirrored_garment,
+    for t in (test_fit_vs_stock, test_tension, test_fit_subdivided_garment, test_fit_mirrored_garment,
               test_transfer_applied_exact, test_transfer_subdiv, test_transfer_copy_only,
-              test_rough_cage, test_errors_are_explained):
+              test_rough_cage, test_slide_and_retransfer, test_live_offset, test_errors_are_explained):
         print(f"== {t.__name__}")
         t()
     print("FAILED: " + ", ".join(FAILS) if FAILS else "ALL PASSED")
-    sys.exit(1 if FAILS else 0)
+    sys.stdout.flush()
+    # The PyPI bpy module can crash while shutting down once an add-on has
+    # registered operators (even a trivial one); exit directly instead.
+    os._exit(1 if FAILS else 0)

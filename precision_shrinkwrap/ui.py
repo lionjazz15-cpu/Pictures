@@ -2,6 +2,8 @@
 
 import bpy
 
+from .mesh_utils import live_offset_identifier, live_offset_modifier
+
 
 class PSW_PT_main(bpy.types.Panel):
     bl_label = "Precision Shrinkwrap"
@@ -19,6 +21,12 @@ class PSW_PT_main(bpy.types.Panel):
         layout.prop(s, "offset")
         if context.active_object is not None:
             layout.prop_search(s, "offset_group", context.active_object, "vertex_groups")
+        layout.prop(s, "live_offset")
+        m = live_offset_modifier(context.active_object)
+        if m is not None and m.node_group is not None:
+            box = layout.box()
+            box.label(text=context.active_object.name, icon="MODIFIER")
+            box.prop(m, f'["{live_offset_identifier(m.node_group)}"]', text="Live Offset")
 
 
 class PSW_PT_rough_cage(bpy.types.Panel):
@@ -41,6 +49,18 @@ class PSW_PT_rough_cage(bpy.types.Panel):
         col.prop(s, "boundary_smooth")
         col.prop(s, "hide_cage")
         layout.operator("precision_shrinkwrap.conform_rough_cage", icon="MOD_SHRINKWRAP")
+
+        box = layout.box()
+        box.label(text="Adjust after fitting", icon="GRIP")
+        obj = context.active_object
+        sliding = obj is not None and obj.modifiers.get("PSW Slide") is not None
+        if sliding:
+            box.label(text="Move vertices: they slide on the body")
+            row = box.row(align=True)
+            row.operator("precision_shrinkwrap.slide_confirm", icon="CHECKMARK")
+            row.operator("precision_shrinkwrap.slide_cancel", text="", icon="X")
+        else:
+            box.operator("precision_shrinkwrap.slide_start", icon="GRIP")
 
 
 def _draw_output_settings(col, s):
