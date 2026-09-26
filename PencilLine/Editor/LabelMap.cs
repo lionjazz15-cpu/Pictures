@@ -46,13 +46,13 @@ namespace PencilLine.EditorTools
             return new Params
             {
                 smoothRadius = Mathf.Clamp(Mathf.RoundToInt((1f + 5f * s) * f), 1, 16),
-                smoothSigma = 0.02f + 0.06f * s,
+                smoothSigma = 0.015f + 0.035f * s,
                 smoothIterations = 1 + Mathf.RoundToInt(2f * s),
                 modeRadius = Mathf.Clamp(Mathf.RoundToInt((0.75f + 1.5f * s) * f), 1, 6),
                 modeIterations = 1 + Mathf.RoundToInt(2f * s),
                 minIsland = Mathf.Max(1, Mathf.RoundToInt((4f + 400f * s * s) * f * f)),
                 upSigma = 0.55f + 0.2f * s,
-                maxDelta = 0.1f + 0.1f * s,
+                maxDelta = 0.05f + 0.06f * s,
             };
         }
 
