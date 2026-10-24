@@ -206,7 +206,7 @@ rp.update({"23": "+1V1", "50": "+1V1", "45": "+1V1", "57": "GND", "19": "GND",
            "20": "XIN", "21": "XOUT", "26": "RUN", "46": "USB_DM", "47": "USB_DP",
            "51": "QSPI_SD3", "52": "QSPI_SCLK", "53": "QSPI_SD0", "54": "QSPI_SD2", "55": "QSPI_SD1", "56": "QSPI_SS",
            "4": "SR_CLK", "5": "SR_SER", "9": "SR_LATCH", "13": "MUX_S0", "14": "MUX_S1", "15": "MUX_S2",
-           "6": "I2C_SDA", "7": "I2C_SCL", "11": "IMU_INT1", "34": "VB_PWM", "37": "LED_DRV",
+           "6": "I2C_SDA", "7": "I2C_SCL", "34": "VB_PWM", "37": "LED_DRV",
            "38": "ADC_A", "39": "VB_SENSE", "40": "ADC_B"})
 place("U1", "Package_DFN_QFN", "QFN-56-1EP_7x7mm_P0.4mm_EP3.2x3.2mm", "RP2040", 34, 68, 0, rp, "C2040", "RP2040")
 for x, y, rail in [(28.5, 63, "+3V3"), (28.5, 66, "+3V3"), (28.5, 70, "+3V3"), (28.5, 73, "+1V1"),
@@ -217,9 +217,9 @@ decap("1uF", "+3V3", 30.5, 61.5, 90)
 decap("1uF", "+1V1", 37.5, 61.5, 90)
 place("Y1", "Crystal", "Crystal_SMD_3225-4Pin_3.2x2.5mm", "12MHz", 33, 77, 0,
       {"1": "XIN", "3": "XOUT_X", "2": "GND", "4": "GND"}, "C9002", "X322512MSB4SI")
-decap("15pF", "XIN", 29.5, 77, 90)
-decap("15pF", "XOUT_X", 36.5, 77, 90)
-passive("R", "1k", "XOUT", "XOUT_X", 39.5, 77, 90)
+decap("15pF", "XIN", 29.8, 80.0, 270)
+decap("15pF", "XOUT_X", 36.6, 77.8, 270)
+passive("R", "1k", "XOUT", "XOUT_X", 36.3, 74.0, 270)
 place("U2", "Package_SO", "SOIC-8_5.23x5.23mm_P1.27mm", "W25Q128JVSIQ", 47, 63, 0,
       {"1": "QSPI_SS", "2": "QSPI_SD1", "3": "QSPI_SD2", "4": "GND", "5": "QSPI_SD0", "6": "QSPI_SCLK",
        "7": "QSPI_SD3", "8": "+3V3"}, "C97521", "W25Q128JVSIQ")
@@ -238,7 +238,7 @@ place("D1", "LED_SMD", "LED_0603_1608Metric", "LED", 64, 73.5, 90, {"1": "GND", 
 
 # ---- IMU ----
 place("U40", "Package_LGA", "LGA-14_3x2.5mm_P0.5mm_LayoutBorder3x4y", "LSM6DS3TR-C", 78, 70, 0,
-      {"1": "GND", "2": "GND", "3": "GND", "4": "IMU_INT1", "5": "+3V3", "6": "GND", "7": "GND",
+      {"1": "GND", "2": "GND", "3": "GND", "5": "+3V3", "6": "GND", "7": "GND",
        "8": "+3V3", "12": "+3V3", "13": "I2C_SCL", "14": "I2C_SDA"}, "C967633", "LSM6DS3TR-C")
 decap("100nF", "+3V3", 75, 66, 90)
 decap("100nF", "+3V3", 81, 66, 90)
@@ -330,6 +330,68 @@ def add_track(a, b, netname, width):
     board.Add(t)
 
 
+PREROUTED: list[tuple[list[tuple[float, float]], str, float]] = []  # board mm, for fanout
+
+
+def route_fixed(points, netname, width, layer=pcbnew.F_Cu):
+    """Hand route in board-relative mm (same coordinates as place())."""
+    pts = [(OX + x, OY + y) for x, y in points]
+    for a, b in zip(pts, pts[1:]):
+        t = pcbnew.PCB_TRACK(board)
+        t.SetStart(VECTOR2I(FromMM(a[0]), FromMM(a[1])))
+        t.SetEnd(VECTOR2I(FromMM(b[0]), FromMM(b[1])))
+        t.SetWidth(FromMM(width))
+        t.SetLayer(layer)
+        t.SetNet(net(netname))
+        board.Add(t)
+    if layer == pcbnew.F_Cu:
+        PREROUTED.append((pts, netname, width))
+
+
+def via_fixed(x, y, netname, size=0.5, drill=0.25):
+    v = pcbnew.PCB_VIA(board)
+    v.SetPosition(VECTOR2I(FromMM(OX + x), FromMM(OY + y)))
+    v.SetWidth(FromMM(size))
+    v.SetDrill(FromMM(drill))
+    v.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
+    v.SetNet(net(netname))
+    board.Add(v)
+    PREROUTED.append(([(OX + x - 0.001, OY + y), (OX + x + 0.001, OY + y)], netname, size))
+
+
+def pad_xy(ref, num):
+    p = next(p for p in board.FindFootprintByReference(ref).Pads() if p.GetNumber() == num)
+    return pcbnew.ToMM(p.GetPosition().x) - OX, pcbnew.ToMM(p.GetPosition().y) - OY
+
+
+def hand_routes():
+    # USB-C: the two D- pins (B7, A7) are joined on the bottom layer through two small vias;
+    # the D+ pins (A6, B6) are joined on top, the A6 trace passing between the two vias.
+    b7, a6, a7, b6 = (pad_xy("J5", n) for n in ("B7", "A6", "A7", "B6"))
+    vx = b7[0] + 1.15
+    route_fixed([b7, (vx, b7[1])], "USB_DM_C", 0.15)
+    route_fixed([a7, (vx, a7[1])], "USB_DM_C", 0.15)
+    via_fixed(vx, b7[1], "USB_DM_C")
+    via_fixed(vx, a7[1], "USB_DM_C")
+    route_fixed([(vx, b7[1]), (vx, a7[1])], "USB_DM_C", 0.2, pcbnew.B_Cu)
+    jx = vx + 1.0
+    route_fixed([a6, (jx, a6[1]), (jx, b6[1])], "USB_DP_C", 0.15)
+    route_fixed([b6, (jx, b6[1])], "USB_DP_C", 0.15)
+    # crystal: XIN around the left of the crystal, XOUT through R53
+    xin, xout = pad_xy("U1", "20"), pad_xy("U1", "21")
+    y1_xin, y1_xout = pad_xy("Y1", "1"), pad_xy("Y1", "3")
+    c_xin = pad_xy("C47", "1")
+    r_a, r_b = pad_xy("R53", "1"), pad_xy("R53", "2")
+    route_fixed([xin, (xin[0], xin[1] + 0.9), (c_xin[0], xin[1] + 0.9 + (xin[0] - c_xin[0])),
+                 (c_xin[0], y1_xin[1]), y1_xin], "XIN", 0.2)
+    route_fixed([(c_xin[0], y1_xin[1]), c_xin], "XIN", 0.2)
+    route_fixed([xout, (xout[0], xout[1] + 0.6), r_a], "XOUT", 0.2)
+    route_fixed([r_b, y1_xout], "XOUT_X", 0.2)
+
+
+hand_routes()
+
+
 def fanout():
     """Give every SMD pad on a plane net a short stub to a via (or to a nearby same-net via).
 
@@ -351,7 +413,7 @@ def fanout():
             pads.append((geom, pad.GetNetname(), fp.GetReference(), pad.GetNumber()))
     tree = STRtree([p[0] for p in pads])
     placed_vias = []  # (Point, net)
-    stubs = []  # (LineString, net, width)
+    stubs = [(LineString(pts), n, w) for pts, n, w in PREROUTED]  # (LineString, net, width)
 
     def conflicts(geom, netname, extra):
         for i in tree.query(geom.buffer(extra + 0.5)):

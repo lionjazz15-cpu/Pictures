@@ -1,5 +1,5 @@
 ** Drc report for /home/user/Pictures/hardware/pressure_pad_pcb/build/pressure_pad_routed.kicad_pcb **
-** Created on 2026-10-24 10:02:43 **
+** Created on 2026-10-24 10:15:14 **
 
 ** Found 173 DRC violations **
 [silk_overlap]: Silkscreen overlap
@@ -8,450 +8,126 @@
     @(187.9900 mm, 103.1700 mm): Line on F.Silkscreen
 [silk_overlap]: Silkscreen overlap
     Rule: board setup constraints silk; Severity: warning
-    @(158.9000 mm, 107.7300 mm): Reference 'J2'
     @(158.4900 mm, 103.1700 mm): Line on F.Silkscreen
+    @(158.9000 mm, 107.7300 mm): Reference 'J2'
 [silk_overlap]: Silkscreen overlap
     Rule: board setup constraints silk; Severity: warning
     @(128.9900 mm, 103.1700 mm): Line on F.Silkscreen
     @(129.4000 mm, 107.7300 mm): Reference 'J3'
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(129.9000 mm, 145.0000 mm): Footprint Q22
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(111.4000 mm, 145.0000 mm): Footprint Q17
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(114.0000 mm, 164.0000 mm): Footprint U4
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(108.0000 mm, 123.0000 mm): Footprint U10
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(189.0000 mm, 123.0000 mm): Footprint U22
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(132.5000 mm, 161.5000 mm): Footprint C43
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(153.5000 mm, 164.0000 mm): Footprint R54
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(168.1000 mm, 132.0000 mm): Footprint R31
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(122.5000 mm, 137.5000 mm): Footprint R6
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(112.6000 mm, 118.5000 mm): Footprint C1
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(139.5000 mm, 177.0000 mm): Footprint R53
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(175.6000 mm, 142.0000 mm): Footprint C25
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(181.3000 mm, 136.0000 mm): Footprint C13
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(152.1000 mm, 145.0000 mm): Footprint Q28
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(111.4000 mm, 137.5000 mm): Footprint R3
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(137.5000 mm, 161.5000 mm): Footprint C46
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(118.8000 mm, 137.5000 mm): Footprint R5
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(163.7000 mm, 136.0000 mm): Footprint C5
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(207.0000 mm, 147.0000 mm): Footprint U24
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(170.3000 mm, 136.0000 mm): Footprint C8
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(118.8000 mm, 149.5000 mm): Footprint R19
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(130.0000 mm, 123.0000 mm): Footprint U12
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(209.0000 mm, 154.0000 mm): Footprint R47
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(136.5000 mm, 177.0000 mm): Footprint C48
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(141.0000 mm, 123.0000 mm): Footprint U13
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(111.0000 mm, 173.0000 mm): Footprint R49
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(168.1000 mm, 136.0000 mm): Footprint C7
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(133.6000 mm, 145.0000 mm): Footprint Q23
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(135.5000 mm, 161.5000 mm): Footprint C44
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(107.7000 mm, 145.0000 mm): Footprint Q16
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(198.9000 mm, 136.0000 mm): Footprint C21
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(115.1000 mm, 149.5000 mm): Footprint R18
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(185.7000 mm, 132.0000 mm): Footprint R37
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(165.9000 mm, 136.0000 mm): Footprint C6
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(203.3000 mm, 136.0000 mm): Footprint C23
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(137.3000 mm, 149.5000 mm): Footprint R24
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(194.5000 mm, 109.0000 mm): Footprint J4
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(216.5000 mm, 181.5000 mm): Footprint H4
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(107.7000 mm, 137.5000 mm): Footprint R2
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(133.0000 mm, 177.0000 mm): Footprint Y1
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(170.3000 mm, 132.0000 mm): Footprint R32
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(141.0000 mm, 145.0000 mm): Footprint Q25
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(106.0000 mm, 177.0000 mm): Footprint C32
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(120.5000 mm, 178.0000 mm): Footprint C34
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(201.1000 mm, 132.0000 mm): Footprint R43
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(158.0000 mm, 177.0000 mm): Footprint SW2
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(176.9000 mm, 132.0000 mm): Footprint R34
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(147.0000 mm, 177.0000 mm): Footprint SW1
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(190.1000 mm, 136.0000 mm): Footprint C17
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(212.5000 mm, 154.0000 mm): Footprint C31
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(185.7000 mm, 136.0000 mm): Footprint C15
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(118.8000 mm, 133.0000 mm): Footprint Q5
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(192.3000 mm, 132.0000 mm): Footprint R40
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(141.0000 mm, 133.0000 mm): Footprint Q11
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(103.8000 mm, 167.0000 mm): Footprint J5
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(134.6000 mm, 118.5000 mm): Footprint C3
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(133.6000 mm, 133.0000 mm): Footprint Q9
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(129.9000 mm, 133.0000 mm): Footprint Q8
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(171.0000 mm, 147.0000 mm): Footprint U30
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(175.0000 mm, 166.0000 mm): Footprint C50
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(130.5000 mm, 161.5000 mm): Footprint C45
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(203.3000 mm, 132.0000 mm): Footprint R44
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(147.0000 mm, 163.0000 mm): Footprint U2
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(133.6000 mm, 137.5000 mm): Footprint R9
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(144.7000 mm, 133.0000 mm): Footprint Q12
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(111.4000 mm, 149.5000 mm): Footprint R17
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(196.7000 mm, 136.0000 mm): Footprint C20
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(104.0000 mm, 149.5000 mm): Footprint R15
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(153.5000 mm, 160.0000 mm): Footprint C49
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(128.5000 mm, 170.0000 mm): Footprint C37
+    @(122.5000 mm, 149.5000 mm): Footprint R20
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
     @(187.9000 mm, 136.0000 mm): Footprint C16
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(190.1000 mm, 132.0000 mm): Footprint R39
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(113.0000 mm, 173.0000 mm): Footprint R50
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(122.5000 mm, 149.5000 mm): Footprint R20
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(148.4000 mm, 137.5000 mm): Footprint R13
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(126.2000 mm, 145.0000 mm): Footprint Q21
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(171.6000 mm, 118.5000 mm): Footprint C9
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(176.9000 mm, 136.0000 mm): Footprint C11
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(178.0000 mm, 170.0000 mm): Footprint U40
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(164.0000 mm, 173.5000 mm): Footprint D1
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(165.0000 mm, 109.0000 mm): Footprint J2
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(205.0000 mm, 156.5000 mm): Footprint C29
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(134.0000 mm, 168.0000 mm): Footprint U1
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(139.5000 mm, 173.0000 mm): Footprint C42
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(112.0000 mm, 180.0000 mm): Footprint U3
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(148.4000 mm, 133.0000 mm): Footprint Q13
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(198.9000 mm, 132.0000 mm): Footprint R42
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(209.0000 mm, 156.5000 mm): Footprint C30
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(141.0000 mm, 149.5000 mm): Footprint R25
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(174.0000 mm, 174.5000 mm): Footprint R58
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(196.7000 mm, 132.0000 mm): Footprint R41
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(145.6000 mm, 118.5000 mm): Footprint C4
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(192.3000 mm, 136.0000 mm): Footprint C18
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(152.1000 mm, 133.0000 mm): Footprint Q14
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(133.6000 mm, 149.5000 mm): Footprint R23
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(163.7000 mm, 132.0000 mm): Footprint R29
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(165.9000 mm, 132.0000 mm): Footprint R30
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(201.1000 mm, 136.0000 mm): Footprint C22
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(139.5000 mm, 170.0000 mm): Footprint C41
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(144.7000 mm, 145.0000 mm): Footprint Q26
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(115.1000 mm, 145.0000 mm): Footprint Q18
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(126.2000 mm, 149.5000 mm): Footprint R21
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(195.6000 mm, 142.0000 mm): Footprint C26
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(128.5000 mm, 163.0000 mm): Footprint C35
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(164.0000 mm, 170.0000 mm): Footprint R57
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(201.0000 mm, 154.0000 mm): Footprint R45
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(115.1000 mm, 133.0000 mm): Footprint Q4
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(212.5000 mm, 158.0000 mm): Footprint R48
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(200.0000 mm, 123.0000 mm): Footprint U23
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(107.7000 mm, 133.0000 mm): Footprint Q2
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(141.0000 mm, 137.5000 mm): Footprint R11
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(139.5000 mm, 166.0000 mm): Footprint C40
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(181.3000 mm, 132.0000 mm): Footprint R36
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(216.5000 mm, 122.0000 mm): Footprint H2
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(179.1000 mm, 132.0000 mm): Footprint R35
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(148.4000 mm, 145.0000 mm): Footprint Q27
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(126.2000 mm, 137.5000 mm): Footprint R7
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(176.5000 mm, 174.5000 mm): Footprint R59
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(211.6000 mm, 142.0000 mm): Footprint C27
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(118.5000 mm, 165.0000 mm): Footprint R52
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(144.7000 mm, 137.5000 mm): Footprint R12
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(181.0000 mm, 166.0000 mm): Footprint C51
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(129.5000 mm, 177.0000 mm): Footprint C47
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(148.4000 mm, 149.5000 mm): Footprint R27
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(104.0000 mm, 145.0000 mm): Footprint Q15
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(187.9000 mm, 132.0000 mm): Footprint R38
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(137.3000 mm, 137.5000 mm): Footprint R10
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(152.1000 mm, 149.5000 mm): Footprint R28
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(144.7000 mm, 149.5000 mm): Footprint R26
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(191.0000 mm, 147.0000 mm): Footprint U31
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(205.0000 mm, 154.0000 mm): Footprint R46
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(118.8000 mm, 145.0000 mm): Footprint Q19
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(178.0000 mm, 123.0000 mm): Footprint U21
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(139.5000 mm, 163.0000 mm): Footprint C39
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(122.5000 mm, 145.0000 mm): Footprint Q20
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(128.5000 mm, 166.0000 mm): Footprint C36
-[lib_footprint_issues]: The current configuration does not include the library ''.
-    Local override; Severity: warning
-    @(152.1000 mm, 137.5000 mm): Footprint R14
+    @(126.2000 mm, 133.0000 mm): Footprint Q7
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
     @(198.0000 mm, 181.5000 mm): Footprint H3
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(106.0000 mm, 109.0000 mm): Footprint J1
+    @(126.2000 mm, 137.5000 mm): Footprint R7
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(193.6000 mm, 118.5000 mm): Footprint C19
+    @(167.0000 mm, 123.0000 mm): Footprint U20
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(203.3000 mm, 132.0000 mm): Footprint R44
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(205.0000 mm, 154.0000 mm): Footprint R46
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(126.2000 mm, 145.0000 mm): Footprint Q21
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
     @(174.7000 mm, 132.0000 mm): Footprint R33
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(137.3000 mm, 133.0000 mm): Footprint Q10
+    @(192.3000 mm, 136.0000 mm): Footprint C18
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(174.7000 mm, 136.0000 mm): Footprint C10
+    @(139.5000 mm, 166.0000 mm): Footprint C40
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(201.0000 mm, 156.5000 mm): Footprint C28
+    @(128.5000 mm, 173.0000 mm): Footprint C38
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(122.5000 mm, 133.0000 mm): Footprint Q6
+    @(122.5000 mm, 137.5000 mm): Footprint R6
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(118.0000 mm, 178.0000 mm): Footprint C33
+    @(137.5000 mm, 161.5000 mm): Footprint C46
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(153.5000 mm, 160.0000 mm): Footprint C49
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(209.0000 mm, 154.0000 mm): Footprint R47
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(194.5000 mm, 109.0000 mm): Footprint J4
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(168.1000 mm, 132.0000 mm): Footprint R31
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(129.9000 mm, 133.0000 mm): Footprint Q8
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(204.6000 mm, 118.5000 mm): Footprint C24
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(111.4000 mm, 145.0000 mm): Footprint Q17
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(128.5000 mm, 170.0000 mm): Footprint C37
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(104.0000 mm, 145.0000 mm): Footprint Q15
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(129.9000 mm, 137.5000 mm): Footprint R8
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(106.0000 mm, 109.0000 mm): Footprint J1
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(113.0000 mm, 173.0000 mm): Footprint R50
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(139.5000 mm, 163.0000 mm): Footprint C39
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(185.7000 mm, 136.0000 mm): Footprint C15
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(119.0000 mm, 123.0000 mm): Footprint U11
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(112.6000 mm, 118.5000 mm): Footprint C1
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(195.6000 mm, 142.0000 mm): Footprint C26
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(144.7000 mm, 149.5000 mm): Footprint R26
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(148.4000 mm, 137.5000 mm): Footprint R13
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(111.0000 mm, 173.0000 mm): Footprint R49
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(190.1000 mm, 136.0000 mm): Footprint C17
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(152.1000 mm, 133.0000 mm): Footprint Q14
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(107.7000 mm, 145.0000 mm): Footprint Q16
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
     @(135.5000 mm, 109.0000 mm): Footprint J3
@@ -460,61 +136,389 @@
     @(104.0000 mm, 133.0000 mm): Footprint Q1
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(126.2000 mm, 133.0000 mm): Footprint Q7
+    @(118.8000 mm, 137.5000 mm): Footprint R5
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(152.1000 mm, 145.0000 mm): Footprint Q28
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(216.5000 mm, 122.0000 mm): Footprint H2
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(130.0000 mm, 123.0000 mm): Footprint U12
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(133.6000 mm, 137.5000 mm): Footprint R9
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(115.1000 mm, 133.0000 mm): Footprint Q4
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(144.7000 mm, 133.0000 mm): Footprint Q12
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(118.0000 mm, 178.0000 mm): Footprint C33
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(118.8000 mm, 133.0000 mm): Footprint Q5
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(129.5000 mm, 177.0000 mm): Footprint C47
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(132.5000 mm, 161.5000 mm): Footprint C43
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(179.1000 mm, 132.0000 mm): Footprint R35
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
     @(156.0000 mm, 170.0000 mm): Footprint R56
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(137.3000 mm, 145.0000 mm): Footprint Q24
+    @(212.5000 mm, 154.0000 mm): Footprint C31
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(119.0000 mm, 123.0000 mm): Footprint U11
+    @(201.0000 mm, 156.5000 mm): Footprint C28
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(111.4000 mm, 133.0000 mm): Footprint Q3
+    @(170.3000 mm, 132.0000 mm): Footprint R32
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(179.1000 mm, 136.0000 mm): Footprint C12
+    @(207.0000 mm, 147.0000 mm): Footprint U24
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(129.9000 mm, 137.5000 mm): Footprint R8
+    @(191.0000 mm, 147.0000 mm): Footprint U31
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(123.6000 mm, 118.5000 mm): Footprint C2
+    @(136.5000 mm, 177.0000 mm): Footprint C48
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
     @(153.5000 mm, 168.0000 mm): Footprint R55
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(204.6000 mm, 118.5000 mm): Footprint C24
+    @(165.9000 mm, 132.0000 mm): Footprint R30
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(182.6000 mm, 118.5000 mm): Footprint C14
+    @(196.7000 mm, 132.0000 mm): Footprint R41
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(107.7000 mm, 149.5000 mm): Footprint R16
+    @(170.3000 mm, 136.0000 mm): Footprint C8
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(141.0000 mm, 133.0000 mm): Footprint Q11
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(176.9000 mm, 132.0000 mm): Footprint R34
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(103.5000 mm, 156.0000 mm): Footprint H1
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(148.4000 mm, 133.0000 mm): Footprint Q13
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(104.0000 mm, 149.5000 mm): Footprint R15
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(129.9000 mm, 145.0000 mm): Footprint Q22
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(147.0000 mm, 163.0000 mm): Footprint U2
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(137.3000 mm, 133.0000 mm): Footprint Q10
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(123.6000 mm, 118.5000 mm): Footprint C2
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(148.4000 mm, 149.5000 mm): Footprint R27
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(178.0000 mm, 170.0000 mm): Footprint U40
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(137.3000 mm, 145.0000 mm): Footprint Q24
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(139.5000 mm, 177.0000 mm): Footprint R53
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(107.7000 mm, 133.0000 mm): Footprint Q2
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(139.5000 mm, 173.0000 mm): Footprint C42
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
     @(104.0000 mm, 137.5000 mm): Footprint R1
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(129.9000 mm, 149.5000 mm): Footprint R22
+    @(181.3000 mm, 136.0000 mm): Footprint C13
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(128.5000 mm, 173.0000 mm): Footprint C38
+    @(141.0000 mm, 123.0000 mm): Footprint U13
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(115.1000 mm, 149.5000 mm): Footprint R18
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(120.5000 mm, 178.0000 mm): Footprint C34
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(114.0000 mm, 164.0000 mm): Footprint U4
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(133.6000 mm, 149.5000 mm): Footprint R23
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(174.0000 mm, 174.5000 mm): Footprint R58
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(111.4000 mm, 133.0000 mm): Footprint Q3
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(175.0000 mm, 166.0000 mm): Footprint C50
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(107.7000 mm, 137.5000 mm): Footprint R2
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(139.5000 mm, 170.0000 mm): Footprint C41
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(135.5000 mm, 161.5000 mm): Footprint C44
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(182.6000 mm, 118.5000 mm): Footprint C14
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(201.0000 mm, 154.0000 mm): Footprint R45
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(133.6000 mm, 133.0000 mm): Footprint Q9
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(163.7000 mm, 136.0000 mm): Footprint C5
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(179.1000 mm, 136.0000 mm): Footprint C12
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(137.3000 mm, 137.5000 mm): Footprint R10
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(111.4000 mm, 149.5000 mm): Footprint R17
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(107.7000 mm, 149.5000 mm): Footprint R16
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(178.0000 mm, 123.0000 mm): Footprint U21
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(153.5000 mm, 164.0000 mm): Footprint R54
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(189.0000 mm, 123.0000 mm): Footprint U22
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(203.3000 mm, 136.0000 mm): Footprint C23
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(115.1000 mm, 145.0000 mm): Footprint Q18
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(201.1000 mm, 132.0000 mm): Footprint R43
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(144.7000 mm, 137.5000 mm): Footprint R12
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(171.6000 mm, 118.5000 mm): Footprint C9
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(134.6000 mm, 118.5000 mm): Footprint C3
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(152.1000 mm, 137.5000 mm): Footprint R14
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(112.0000 mm, 180.0000 mm): Footprint U3
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(137.3000 mm, 149.5000 mm): Footprint R24
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(152.1000 mm, 149.5000 mm): Footprint R28
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
     @(118.5000 mm, 163.0000 mm): Footprint R51
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
+    @(133.0000 mm, 177.0000 mm): Footprint Y1
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(126.2000 mm, 149.5000 mm): Footprint R21
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(111.4000 mm, 137.5000 mm): Footprint R3
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(198.9000 mm, 132.0000 mm): Footprint R42
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(122.5000 mm, 133.0000 mm): Footprint Q6
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(118.5000 mm, 165.0000 mm): Footprint R52
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(196.7000 mm, 136.0000 mm): Footprint C20
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(212.5000 mm, 158.0000 mm): Footprint R48
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(103.8000 mm, 167.0000 mm): Footprint J5
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(147.0000 mm, 177.0000 mm): Footprint SW1
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(158.0000 mm, 177.0000 mm): Footprint SW2
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(108.0000 mm, 123.0000 mm): Footprint U10
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(211.6000 mm, 142.0000 mm): Footprint C27
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(141.0000 mm, 149.5000 mm): Footprint R25
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(201.1000 mm, 136.0000 mm): Footprint C22
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(193.6000 mm, 118.5000 mm): Footprint C19
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(129.9000 mm, 149.5000 mm): Footprint R22
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(134.0000 mm, 168.0000 mm): Footprint U1
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(176.5000 mm, 174.5000 mm): Footprint R59
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(168.1000 mm, 136.0000 mm): Footprint C7
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(145.6000 mm, 118.5000 mm): Footprint C4
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(106.0000 mm, 177.0000 mm): Footprint C32
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(165.0000 mm, 109.0000 mm): Footprint J2
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(200.0000 mm, 123.0000 mm): Footprint U23
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(133.6000 mm, 145.0000 mm): Footprint Q23
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(141.0000 mm, 145.0000 mm): Footprint Q25
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(209.0000 mm, 156.5000 mm): Footprint C30
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
     @(115.1000 mm, 137.5000 mm): Footprint R4
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(167.0000 mm, 123.0000 mm): Footprint U20
+    @(164.0000 mm, 173.5000 mm): Footprint D1
 [lib_footprint_issues]: The current configuration does not include the library ''.
     Local override; Severity: warning
-    @(103.5000 mm, 156.0000 mm): Footprint H1
+    @(148.4000 mm, 145.0000 mm): Footprint Q27
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(198.9000 mm, 136.0000 mm): Footprint C21
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(164.0000 mm, 170.0000 mm): Footprint R57
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(192.3000 mm, 132.0000 mm): Footprint R40
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(165.9000 mm, 136.0000 mm): Footprint C6
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(128.5000 mm, 166.0000 mm): Footprint C36
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(175.6000 mm, 142.0000 mm): Footprint C25
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(187.9000 mm, 132.0000 mm): Footprint R38
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(130.5000 mm, 161.5000 mm): Footprint C45
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(118.8000 mm, 149.5000 mm): Footprint R19
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(163.7000 mm, 132.0000 mm): Footprint R29
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(128.5000 mm, 163.0000 mm): Footprint C35
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(141.0000 mm, 137.5000 mm): Footprint R11
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(118.8000 mm, 145.0000 mm): Footprint Q19
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(171.0000 mm, 147.0000 mm): Footprint U30
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(185.7000 mm, 132.0000 mm): Footprint R37
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(216.5000 mm, 181.5000 mm): Footprint H4
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(205.0000 mm, 156.5000 mm): Footprint C29
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(181.0000 mm, 166.0000 mm): Footprint C51
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(181.3000 mm, 132.0000 mm): Footprint R36
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(144.7000 mm, 145.0000 mm): Footprint Q26
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(174.7000 mm, 136.0000 mm): Footprint C10
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(176.9000 mm, 136.0000 mm): Footprint C11
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(190.1000 mm, 132.0000 mm): Footprint R39
+[lib_footprint_issues]: The current configuration does not include the library ''.
+    Local override; Severity: warning
+    @(122.5000 mm, 145.0000 mm): Footprint Q20
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; Severity: warning
+    @(100.0000 mm, 185.0000 mm): Line on Edge.Cuts
+    @(99.9000 mm, 107.7300 mm): Reference 'J1'
 [silk_edge_clearance]: Silkscreen clipped by board edge
     Rule: board setup constraints silk; Severity: warning
     @(100.0000 mm, 185.0000 mm): Line on Edge.Cuts
@@ -523,28 +527,24 @@
     Rule: board setup constraints silk; Severity: warning
     @(100.0000 mm, 185.0000 mm): Line on Edge.Cuts
     @(101.8000 mm, 171.7000 mm): Line on F.Silkscreen
-[silk_edge_clearance]: Silkscreen clipped by board edge
-    Rule: board setup constraints silk; Severity: warning
-    @(100.0000 mm, 185.0000 mm): Line on Edge.Cuts
-    @(99.9000 mm, 107.7300 mm): Reference 'J1'
 
 ** Found 4 unconnected pads **
 [unconnected_items]: Missing connection between items
     Local override; Severity: error
-    @(107.8450 mm, 163.7500 mm): Pad B12 [GND] of J5 on F.Cu
-    @(106.9300 mm, 162.6800 mm): PTH pad S1 [GND] of J5
-[unconnected_items]: Missing connection between items
-    Local override; Severity: error
-    @(137.4375 mm, 168.6000 mm): Pad 34 [VB_PWM] of U1 on F.Cu
-    @(200.1750 mm, 154.0000 mm): Pad 1 [VB_PWM] of R45 on F.Cu
-[unconnected_items]: Missing connection between items
-    Local override; Severity: error
-    @(111.5625 mm, 166.2500 mm): Track [USB_DM_C] on F.Cu, length 3.7175 mm
+    @(107.8450 mm, 166.2500 mm): Pad B7 [USB_DM_C] of J5 on F.Cu
     @(107.8450 mm, 167.2500 mm): Pad A7 [USB_DM_C] of J5 on F.Cu
 [unconnected_items]: Missing connection between items
     Local override; Severity: error
-    @(131.9000 mm, 177.8500 mm): Track [XIN] on F.Cu, length 2.3250 mm
+    @(130.5625 mm, 169.4000 mm): Pad 11 [IMU_INT1] of U1 on F.Cu
+    @(176.8375 mm, 170.7500 mm): Pad 4 [IMU_INT1] of U40 on F.Cu
+[unconnected_items]: Missing connection between items
+    Local override; Severity: error
+    @(131.9000 mm, 177.8500 mm): Pad 1 [XIN] of Y1 on F.Cu
     @(133.4000 mm, 171.4375 mm): Pad 20 [XIN] of U1 on F.Cu
+[unconnected_items]: Missing connection between items
+    Local override; Severity: error
+    @(133.8000 mm, 171.4375 mm): Pad 21 [XOUT] of U1 on F.Cu
+    @(139.5000 mm, 177.8250 mm): Pad 1 [XOUT] of R53 on F.Cu
 
 ** Found 0 Footprint errors **
 
