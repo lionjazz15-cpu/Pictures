@@ -1,4 +1,4 @@
-"""SeatPad v0 wire protocol (must match firmware/seatpad_pico/seatpad_pico.ino).
+"""Pressure pad v0 wire protocol (must match firmware/pressure_pad/pressure_pad.ino).
 
 Binary frame, little endian:
     offset size  field
@@ -10,7 +10,8 @@ Binary frame, little endian:
     8      4     seq
     12     8     device time at scan start [us]
     20     2     vb_raw (ADC reading of the Vb reference)
-    22     2     seat_rows (rows [0, seat_rows) are seat, the rest back)
+    22     1     main_rows (rows [0, main_rows) are seat/floor, the rest back)
+    23     1     kind (0 = chair: seat + back, 1 = floor)
     24     2*R*C raw ADC values, row-major
     end-2  2     CRC-16/CCITT-FALSE over bytes [4, end-2)
 
@@ -26,8 +27,10 @@ import numpy as np
 
 MAGIC = b"CMSP"
 VERSION = 1
-HEADER = struct.Struct("<4sBBBBIQHH")
+HEADER = struct.Struct("<4sBBBBIQHBB")
 FLAG_SATURATED = 0x01
+KIND_CHAIR = 0
+KIND_FLOOR = 1
 MAX_TEXT_LINE = 256
 
 
@@ -47,16 +50,19 @@ class Frame:
     device_t_us: int
     flags: int
     vb_raw: int
-    seat_rows: int
+    main_rows: int
     raw: np.ndarray  # (rows, cols) uint16
+    kind: int = KIND_CHAIR
 
     @property
-    def seat(self) -> np.ndarray:
-        return self.raw[: self.seat_rows]
+    def main(self) -> np.ndarray:
+        """Seat (chair pad) or floor (floor pad) rows."""
+        return self.raw[: self.main_rows]
 
     @property
     def back(self) -> np.ndarray:
-        return self.raw[self.seat_rows :]
+        """Backrest rows; empty for the floor pad."""
+        return self.raw[self.main_rows :]
 
 
 def frame_len(rows: int, cols: int) -> int:
@@ -67,7 +73,7 @@ def encode_frame(frame: Frame) -> bytes:
     rows, cols = frame.raw.shape
     body = HEADER.pack(
         MAGIC, VERSION, frame.flags, rows, cols, frame.seq & 0xFFFFFFFF,
-        frame.device_t_us, frame.vb_raw, frame.seat_rows,
+        frame.device_t_us, frame.vb_raw, frame.main_rows, frame.kind,
     ) + frame.raw.astype("<u2").tobytes()
     return body + struct.pack("<H", crc16_ccitt(body[4:]))
 
@@ -103,9 +109,9 @@ class StreamParser:
             if self._buf[:4] != MAGIC:
                 self._skip_to_candidate()
                 continue
-            _, version, flags, rows, cols, seq, t_us, vb, seat_rows = HEADER.unpack_from(self._buf)
+            _, version, flags, rows, cols, seq, t_us, vb, main_rows, kind = HEADER.unpack_from(self._buf)
             n = frame_len(rows, cols)
-            if version != VERSION or rows == 0 or cols == 0 or seat_rows > rows:
+            if version != VERSION or rows == 0 or cols == 0 or main_rows > rows or kind > KIND_FLOOR:
                 del self._buf[0]
                 continue
             if len(self._buf) < n:
@@ -117,7 +123,7 @@ class StreamParser:
                 del self._buf[0]
                 continue
             raw = np.frombuffer(payload, dtype="<u2", count=rows * cols, offset=HEADER.size)
-            out.append(Frame(seq, t_us, flags, vb, seat_rows, raw.reshape(rows, cols).copy()))
+            out.append(Frame(seq, t_us, flags, vb, main_rows, raw.reshape(rows, cols).copy(), kind))
             del self._buf[:n]
         return out
 

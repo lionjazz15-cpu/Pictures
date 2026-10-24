@@ -1,6 +1,6 @@
 import numpy as np
 
-from protocol import Electrical, Frame, StreamParser, conductance_us, crc16_ccitt, encode_frame
+from protocol import KIND_FLOOR, Electrical, Frame, StreamParser, conductance_us, crc16_ccitt, encode_frame
 
 
 def make_frame(seq=7, rows=28, cols=16):
@@ -18,7 +18,13 @@ def test_roundtrip():
     (out,) = StreamParser().feed(encode_frame(frame))
     assert out.seq == 7 and out.device_t_us == frame.device_t_us and out.vb_raw == 2048
     np.testing.assert_array_equal(out.raw, frame.raw)
-    assert out.seat.shape == (16, 16) and out.back.shape == (12, 16)
+    assert out.main.shape == (16, 16) and out.back.shape == (12, 16)
+
+
+def test_floor_kind_roundtrip():
+    raw = np.zeros((16, 16), dtype=np.uint16)
+    (out,) = StreamParser().feed(encode_frame(Frame(1, 2, 0, 2048, 16, raw, KIND_FLOOR)))
+    assert out.kind == KIND_FLOOR and out.main.shape == (16, 16) and out.back.shape == (0, 16)
 
 
 def test_split_chunks_text_and_garbage():

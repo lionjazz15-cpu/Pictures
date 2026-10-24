@@ -1,21 +1,27 @@
-// ChairMotion SeatPad v0 firmware (Raspberry Pi Pico / RP2040)
+// ChairMotion pressure pad v0 firmware (Raspberry Pi Pico / RP2040)
 //
 // Board core: "Raspberry Pi Pico/RP2040" by Earle F. Philhower (arduino-pico).
+// Set PAD_KIND below before flashing: one Pico per pad.
+//   PAD_CHAIR: 28 rows x 16 cols (seat 16 rows + back 12 rows, columns shared)
+//   PAD_FLOOR: 16 rows x 16 cols
 //
-// Scans a 28-row x 16-column piezoresistive matrix (seat 16 rows + back 12 rows,
-// the 16 column lines are shared) with the zero-potential method:
+// Scans a piezoresistive matrix with the zero-potential method:
 //   - every column is held at Vb by a transimpedance amplifier (TIA)
 //   - unselected rows are pulled up to Vb  -> no current through their cells
 //   - the selected row is pulled to GND by a low-side driver (TBD62083A)
 // TIA output = Vb + I_cell * Rf, so (raw - vb_raw) is proportional to the
 // conductance of the single selected cell.
 //
-// Wire protocol (USB CDC), see tools/seatpad/protocol.py:
+// Wire protocol (USB CDC), see tools/pressure_pad/protocol.py:
 //   binary frame : "CMSP" + header + uint16 raw[ROWS*COLS] + crc16 (little endian)
 //   text replies : lines starting with '#'
 //   commands     : START, STOP, INFO, PING <host_ns>, RATE <hz>
 
 #include <Arduino.h>
+
+#define PAD_CHAIR 0
+#define PAD_FLOOR 1
+#define PAD_KIND PAD_CHAIR  // <- change to PAD_FLOOR for the floor mat
 
 // ---- pin map --------------------------------------------------------------
 static const uint8_t PIN_SRCLK = 2;   // 74HC595 SRCLK (shift clock)
@@ -27,13 +33,21 @@ static const uint8_t PIN_ADC_VB = 27;   // ADC1: Vb sense
 static const uint8_t PIN_SMPS_PWM = 23; // HIGH = PWM mode, lower ADC noise
 
 // ---- matrix geometry ------------------------------------------------------
-static const uint8_t SEAT_ROWS = 16;
-static const uint8_t BACK_ROWS = 12;
-static const uint8_t ROWS = SEAT_ROWS + BACK_ROWS;
-static const uint8_t COLS = 16;
+#if PAD_KIND == PAD_CHAIR
+static const uint8_t MAIN_ROWS = 16;    // seat
+static const uint8_t EXTRA_ROWS = 12;   // back
 static const uint8_t DRIVER_BITS = 32;  // 4 x 74HC595
+#elif PAD_KIND == PAD_FLOOR
+static const uint8_t MAIN_ROWS = 16;    // floor
+static const uint8_t EXTRA_ROWS = 0;
+static const uint8_t DRIVER_BITS = 16;  // 2 x 74HC595
+#else
+#error "unknown PAD_KIND"
+#endif
+static const uint8_t ROWS = MAIN_ROWS + EXTRA_ROWS;
+static const uint8_t COLS = 16;
 // Shift-register output index for each logical row.
-// Seat rows 0..15 -> U1/U2 Q0..Q7, back rows 0..11 -> U3 Q0..Q7, U4 Q0..Q3.
+// Main rows 0..15 -> U1/U2 Q0..Q7, back rows 0..11 -> U3 Q0..Q7, U4 Q0..Q3.
 static uint8_t rowToBit(uint8_t row) { return row; }
 
 // ---- timing ---------------------------------------------------------------
@@ -138,7 +152,8 @@ static void scanFrame() {
   put32(h + 8, seq++);
   put64(h + 12, t0);
   put16(h + 20, vb);
-  put16(h + 22, SEAT_ROWS);  // rows [0, SEAT_ROWS) are seat, the rest back
+  // low byte: rows [0, MAIN_ROWS) are seat/floor, the rest back; high byte: pad kind
+  put16(h + 22, MAIN_ROWS | (PAD_KIND << 8));
   uint16_t crc = crc16Ccitt(frameBuf + 4, FRAME_LEN - 4 - 2);
   put16(frameBuf + FRAME_LEN - 2, crc);
   Serial.write(frameBuf, FRAME_LEN);
@@ -151,9 +166,10 @@ static void handleCommand(const String &line) {
   } else if (line == "STOP") {
     streaming = false;
   } else if (line == "INFO") {
-    Serial.printf("#INFO {\"fw\":\"seatpad_v0\",\"proto\":%u,\"rows\":%u,\"seat_rows\":%u,"
-                  "\"cols\":%u,\"rate_hz\":%lu}\n",
-                  PROTO_VERSION, ROWS, SEAT_ROWS, COLS, 1000000UL / framePeriodUs);
+    Serial.printf("#INFO {\"fw\":\"pressure_pad_v0\",\"kind\":\"%s\",\"proto\":%u,\"rows\":%u,"
+                  "\"main_rows\":%u,\"cols\":%u,\"rate_hz\":%lu}\n",
+                  PAD_KIND == PAD_CHAIR ? "chair" : "floor", PROTO_VERSION, ROWS, MAIN_ROWS, COLS,
+                  1000000UL / framePeriodUs);
   } else if (line.startsWith("PING ")) {
     // Echo the host timestamp with our clock, for offset/drift estimation.
     Serial.printf("#PONG %s %s\n", line.substring(5).c_str(), u64ToStr(micros64()));

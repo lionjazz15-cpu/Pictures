@@ -1,7 +1,7 @@
-# 06. SeatPad v0 製作ガイド（座面＋背もたれ・汎用サイズ）
+# 06. 椅子マット（SeatPad）v0 製作ガイド（座面＋背もたれ・汎用サイズ）
 
 > 目的：普通の椅子（ダイニングチェア〜オフィスチェア）に置ける、座面と背もたれの圧力マットを自作する。
-> 回路はユニバーサル基板で組める部品（DIP 中心）で構成。ファームウェアは `firmware/seatpad_pico/`、PC ツールは `tools/seatpad/`。
+> 回路はユニバーサル基板で組める部品（DIP 中心）で構成。ファームウェアは `firmware/pressure_pad/`（床マットと共通）、PC ツールは `tools/pressure_pad/`。床マットは [07](07_floorpad_v0_build_guide.md)。
 > 部品の価格は概算。部品の型番の細部（ピン配置・入力しきい値）は必ず各データシートで確認すること。
 
 ---
@@ -124,12 +124,12 @@ GP23 は Pico 基板内部の電源モードの切り替え。ファームウェ
 
 ## 6. 立ち上げとテスト
 
-1. **ファームウェアを書き込む**：Arduino IDE で「Raspberry Pi Pico/RP2040」（Earle F. Philhower 版）のボードを追加 → `firmware/seatpad_pico/seatpad_pico.ino` を開いて書き込む。
+1. **ファームウェアを書き込む**：Arduino IDE で「Raspberry Pi Pico/RP2040」（Earle F. Philhower 版）のボードを追加 → `firmware/pressure_pad/pressure_pad.ino` を開き、先頭の `#define PAD_KIND` が `PAD_CHAIR` になっていることを確認して書き込む。
 2. **PC ツール**：
    ```
-   cd tools/seatpad
+   cd tools/pressure_pad
    pip install -r requirements.txt
-   python viewer.py --fake            # 実機なしで表示を確認
+   python viewer.py --fake chair      # 実機なしで表示を確認
    python viewer.py --port COM5       # Windows（デバイスマネージャーで番号を確認）
    ```
 3. **マットなしで確認**：全セルがほぼ 0（ノイズ程度）。`Vb` の ADC 値が約 2048 になっていること。
@@ -138,7 +138,7 @@ GP23 は Pico 基板内部の電源モードの切り替え。ファームウェ
    - 最小値が 300Ω を切るほど低い → Velostat を2枚重ねにする、または電極を細くする。
    - Rf を変えたら `--rf` で値を指定：`python viewer.py --port COM5 --rf 680`
 6. **ゼロ点の取得**：椅子から立って `z` キー → 30フレームの平均を無荷重の基準として引く。マットを付け直したとき・背もたれを曲げて付けたときは毎回行う。
-7. **記録**：`r` キーで開始・停止 → `recordings/seatpad_日時.npz`（生の ADC 値、デバイスの時刻、PC の受信時刻、時刻合わせの PING/PONG）。
+7. **記録**：`r` キーで開始・停止 → `recordings/chairpad_日時.npz`（生の ADC 値、デバイスの時刻、PC の受信時刻、時刻合わせの PING/PONG）。
 
 ## 7. 既知の制限（v1 で改善する点）
 
