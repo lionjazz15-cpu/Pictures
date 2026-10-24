@@ -12,6 +12,14 @@ VTuber 向けの、**装着ゼロ・ポン置き**の着席型3Dモーション�
 | 03 | [商用ライセンス確認表](docs/03_license_matrix.md) | コード・重み・データセット・人体モデル・SDK |
 | 04 | [実装計画・原価・リスク](docs/04_implementation_plan.md) | MVP、着手の順番、部品表、原価の概算、リスク |
 | 05 | [低コスト化プラン](docs/05_low_cost_plan.md) | ToF を先に試す構成、開発機材 約3〜4.5万円、Lite / Standard / Pro のラインナップ |
+| 06 | [SeatPad v0 製作ガイド](docs/06_seatpad_v0_build_guide.md) | 座面＋背もたれの汎用マット（448点・60Hz）、ゼロ電位法の回路、部品表、作り方、テスト手順 |
+
+## コード
+
+| パス | 内容 |
+|---|---|
+| `firmware/seatpad_pico/` | Raspberry Pi Pico 用ファームウェア（Arduino、Earle Philhower 版コア） |
+| `tools/seatpad/` | PC 用ヒートマップ表示・記録ツール（`python viewer.py --fake` で実機なしでも動く）、通信プロトコル、テスト |
 
 ## 設計の要点（TL;DR）
 
@@ -26,6 +34,7 @@ VTuber 向けの、**装着ゼロ・ポン置き**の着席型3Dモーション�
 ## ステータス
 
 - [x] 技術仕様書 v0.1（ドラフト）
-- [ ] Phase 1：16×16 圧力マット
+- [x] SeatPad v0 の設計・ファームウェア・表示ツール（実機は未製作）
+- [ ] Phase 1：SeatPad v0 の製作と評価
 - [ ] Phase 2：机下レーダー／ToF の観測性テスト（Go/No-Go）
 - [ ] Phase 3〜6

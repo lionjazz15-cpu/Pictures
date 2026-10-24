@@ -1,0 +1,59 @@
+import numpy as np
+
+from protocol import Electrical, Frame, StreamParser, conductance_us, crc16_ccitt, encode_frame
+
+
+def make_frame(seq=7, rows=28, cols=16):
+    raw = (np.arange(rows * cols, dtype=np.uint16) % 4096).reshape(rows, cols)
+    return Frame(seq, 123_456_789_012, 0, 2048, 16, raw)
+
+
+def test_crc_reference_value():
+    # CRC-16/CCITT-FALSE check value
+    assert crc16_ccitt(b"123456789") == 0x29B1
+
+
+def test_roundtrip():
+    frame = make_frame()
+    (out,) = StreamParser().feed(encode_frame(frame))
+    assert out.seq == 7 and out.device_t_us == frame.device_t_us and out.vb_raw == 2048
+    np.testing.assert_array_equal(out.raw, frame.raw)
+    assert out.seat.shape == (16, 16) and out.back.shape == (12, 16)
+
+
+def test_split_chunks_text_and_garbage():
+    data = b"\x00\x13garbageCM#PONG 1 2\n" + encode_frame(make_frame(1)) + b"#INFO {}\n" + encode_frame(make_frame(2))
+    parser = StreamParser()
+    items = []
+    for i in range(0, len(data), 37):
+        items += parser.feed(data[i : i + 37])
+    frames = [x for x in items if isinstance(x, Frame)]
+    texts = [x for x in items if isinstance(x, str)]
+    assert [f.seq for f in frames] == [1, 2]
+    assert texts == ["PONG 1 2", "INFO {}"]
+
+
+def test_corrupted_frame_is_dropped_and_stream_recovers():
+    bad = bytearray(encode_frame(make_frame(1)))
+    bad[100] ^= 0xFF
+    parser = StreamParser()
+    items = parser.feed(bytes(bad) + encode_frame(make_frame(2)))
+    assert [f.seq for f in items if isinstance(f, Frame)] == [2]
+    assert parser.crc_errors == 1
+
+
+def test_conductance_matches_single_cell():
+    raw = np.full((28, 16), 2048, dtype=np.uint16)
+    raw[3, 5] = 2048 + 1241  # ~1.0 V across Rf
+    el = Electrical(rf_ohm=1000.0, row_driver_ohm=0.0)
+    g = conductance_us(Frame(0, 0, 0, 2048, 16, raw), el)
+    # I = 1.0 V / 1 kohm = 1 mA, Vcell = Vb = 1.65 V -> G = 606 uS
+    assert abs(g[3, 5] - 606) < 2
+    assert g.sum() == g[3, 5]
+
+
+def test_row_driver_drop_increases_conductance():
+    raw = np.full((28, 16), 2048 + 600, dtype=np.uint16)
+    g0 = conductance_us(Frame(0, 0, 0, 2048, 16, raw), Electrical(row_driver_ohm=0.0))
+    g1 = conductance_us(Frame(0, 0, 0, 2048, 16, raw), Electrical(row_driver_ohm=5.0))
+    assert np.all(g1 > g0)
