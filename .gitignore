@@ -2,3 +2,4 @@ __pycache__/
 .pytest_cache/
 recordings/
 hardware/pressure_pad_pcb/build/
+hardware/pressure_pad_pcb/logs/
