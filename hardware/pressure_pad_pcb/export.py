@@ -20,7 +20,6 @@ import pcbnew
 HERE = Path(__file__).resolve().parent
 BUILD, OUT, IMG = HERE / "build", HERE / "jlcpcb", HERE / "images"
 PCB = BUILD / "pressure_pad_routed.kicad_pcb"
-OX, OY = 100.0, 100.0  # board origin used by gen_board.py
 
 # KiCad footprint orientation -> JLCPCB library orientation (degrees added to KiCad rotation).
 # Common corrections used by the KiCad/JLCPCB community tools. JLCPCB shows a placement preview
@@ -96,9 +95,16 @@ with open(OUT / "cpl.csv", "w", newline="") as f:
             if re.search(pattern, name):
                 rot += fix
                 break
-        pos = fp.GetPosition()
-        x = pcbnew.ToMM(pos.x) - OX
-        y = -(pcbnew.ToMM(pos.y) - OY)  # JLCPCB uses y up
+        if name.startswith("IDC-Header"):
+            # through-hole headers have their origin on pin 1; JLCPCB places by body centre
+            xs = [p.GetPosition().x for p in fp.Pads()]
+            ys = [p.GetPosition().y for p in fp.Pads()]
+            pos = pcbnew.VECTOR2I((min(xs) + max(xs)) // 2, (min(ys) + max(ys)) // 2)
+        else:
+            pos = fp.GetPosition()
+        # same coordinate system as the gerbers (absolute, y up)
+        x = pcbnew.ToMM(pos.x)
+        y = -pcbnew.ToMM(pos.y)
         w.writerow([ref, f"{x:.3f}mm", f"{y:.3f}mm", "Top", f"{rot % 360:.0f}"])
 
 # ---- netlist for human review ----
@@ -124,7 +130,7 @@ def render(layers, name, mirror=False):
     cmd = ["kicad-cli", "pcb", "export", "svg", "--layers", layers, "--page-size-mode", "2",
            "--exclude-drawing-sheet", "-o", str(svg), str(PCB)]
     if mirror:
-        cmd.insert(5, "--mirror")
+        cmd.insert(-3, "--mirror")
     subprocess.run(cmd, check=True, capture_output=True)
     import cairosvg
 

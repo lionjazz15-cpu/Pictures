@@ -34,6 +34,30 @@ def import_ses(board: pcbnew.BOARD, path: str, via_mm=(0.6, 0.3)) -> tuple[int, 
     scale = 1.0 / (1000.0 * float(res_value))  # session units -> mm
     layer_ids = {board.GetLayerName(i): i for i in range(pcbnew.PCB_LAYER_ID_COUNT)}
     nets = board.GetNetsByName()
+    # The session repeats copper that was already on the board (e.g. fanout vias); skip duplicates.
+    key = lambda x, y: (round(x, 3), round(y, 3))  # noqa: E731
+    via_buckets: dict[tuple[int, int], list[tuple[float, float]]] = {}
+
+    def via_exists(x, y):
+        bx, by = int(x * 10), int(y * 10)
+        for i in (bx - 1, bx, bx + 1):
+            for j in (by - 1, by, by + 1):
+                if any(abs(x - vx) < 0.01 and abs(y - vy) < 0.01 for vx, vy in via_buckets.get((i, j), [])):
+                    return True
+        return False
+
+    def remember_via(x, y):
+        via_buckets.setdefault((int(x * 10), int(y * 10)), []).append((x, y))
+
+    for t in board.GetTracks():
+        if t.GetClass() == "PCB_VIA":
+            remember_via(pcbnew.ToMM(t.GetPosition().x), pcbnew.ToMM(t.GetPosition().y))
+    have_segs = set()
+    for t in board.GetTracks():
+        if t.GetClass() == "PCB_TRACK":
+            a = key(pcbnew.ToMM(t.GetStart().x), pcbnew.ToMM(t.GetStart().y))
+            b = key(pcbnew.ToMM(t.GetEnd().x), pcbnew.ToMM(t.GetEnd().y))
+            have_segs.add((t.GetLayer(), min(a, b), max(a, b)))
     n_seg = n_via = 0
     for net_node in _find(_find(routes, "network_out")[0], "net"):
         netinfo = nets[net_node[1]]
@@ -43,6 +67,11 @@ def import_ses(board: pcbnew.BOARD, path: str, via_mm=(0.6, 0.3)) -> tuple[int, 
             coords = [float(v) * scale for v in path_node[3:] if not isinstance(v, list)]
             pts = [(coords[i], -coords[i + 1]) for i in range(0, len(coords), 2)]
             for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+                a, b = key(x1, y1), key(x2, y2)
+                seg_key = (layer_ids[layer], min(a, b), max(a, b))
+                if seg_key in have_segs or a == b:
+                    continue
+                have_segs.add(seg_key)
                 t = pcbnew.PCB_TRACK(board)
                 t.SetStart(VECTOR2I(FromMM(x1), FromMM(y1)))
                 t.SetEnd(VECTOR2I(FromMM(x2), FromMM(y2)))
@@ -53,6 +82,9 @@ def import_ses(board: pcbnew.BOARD, path: str, via_mm=(0.6, 0.3)) -> tuple[int, 
                 n_seg += 1
         for via in _find(net_node, "via"):
             x, y = float(via[2]) * scale, -float(via[3]) * scale
+            if via_exists(x, y):
+                continue
+            remember_via(x, y)
             v = pcbnew.PCB_VIA(board)
             v.SetPosition(VECTOR2I(FromMM(x), FromMM(y)))
             v.SetWidth(FromMM(via_mm[0]))

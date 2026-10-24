@@ -431,6 +431,20 @@ def fanout():
 
 fanout()
 
+
+def usb_shell_ground():
+    """Tie the USB-C SMD ground pins (A1/B12, A12/B1) to the nearest through-hole shell pin."""
+    j5 = board.FindFootprintByReference("J5")
+    shell = [p for p in j5.Pads() if p.GetNumber() == "S1"]
+    for pad in j5.Pads():
+        if pad.GetNumber() in ("A1", "A12"):
+            pos = pad.GetPosition()
+            near = min(shell, key=lambda s: (s.GetPosition() - pos).EuclideanNorm())
+            add_track((pos.x, pos.y), (near.GetPosition().x, near.GetPosition().y), "GND", 0.3)
+
+
+usb_shell_ground()
+
 # small passives and transistors: keep references on the fab layer only (less silkscreen clutter)
 for fp in board.GetFootprints():
     if fp.GetReference()[0] in "RCQD" and not fp.GetReference().startswith("D"):
