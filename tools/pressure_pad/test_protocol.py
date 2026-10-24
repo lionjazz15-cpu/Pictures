@@ -1,6 +1,6 @@
 import numpy as np
 
-from protocol import KIND_FLOOR, KIND_TEST, Electrical, Frame, StreamParser, conductance_us, crc16_ccitt, encode_frame
+from protocol import BOARD_PCB_V1, KIND_FLOOR, KIND_TEST, Electrical, Frame, StreamParser, conductance_us, crc16_ccitt, encode_frame
 
 
 def make_frame(seq=7, rows=28, cols=16):
@@ -75,3 +75,24 @@ def test_debug_dump_lines_are_text():
     dump = b"#DUMP vb=2047 (about 2048 is normal)\n#row0 :    0   12  300    0\n"
     items = StreamParser().feed(dump)
     assert items == ["DUMP vb=2047 (about 2048 is normal)", "row0 :    0   12  300    0"]
+
+
+def test_board_nibble_roundtrip_and_defaults():
+    raw = np.full((28, 16), 2048, dtype=np.uint16)
+    (out,) = StreamParser().feed(encode_frame(Frame(1, 2, 0, 2048, 16, raw, KIND_FLOOR, BOARD_PCB_V1)))
+    assert out.kind == KIND_FLOOR and out.board == BOARD_PCB_V1
+    el = Electrical.for_board(BOARD_PCB_V1)
+    assert el.rf_ohm == 2200.0 and el.row_driver_ohm < 0.1
+    assert Electrical.for_board(0, 680.0).rf_ohm == 680.0
+
+
+def test_conductance_is_independent_of_vb_range():
+    # Same cell (G = 200 uS) read at Vb = 1.65 V and at Vb = 0.35 V on the PCB (Rf = 2.2k)
+    el = Electrical.for_board(BOARD_PCB_V1)
+    counts_per_v = 4095 / 3.3
+    gs = []
+    for vb in (1.65, 0.35):
+        raw = np.full((28, 16), round(vb * counts_per_v), dtype=np.uint16)
+        raw[0, 0] = round((vb + vb * 200e-6 * 2200) * counts_per_v)
+        gs.append(conductance_us(Frame(0, 0, 0, round(vb * counts_per_v), 16, raw, 0, BOARD_PCB_V1), el)[0, 0])
+    assert abs(gs[0] - 200) < 3 and abs(gs[1] - 200) < 8

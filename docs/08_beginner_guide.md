@@ -23,7 +23,7 @@
 
 ステップ4〜5 の練習回路は、**本番の回路をそのまま小さくしたもの**です。ここで動けば、本番は「同じものを数を増やして作る」だけになります。
 
-> **ステップ8 について**：本番の基板はつなぐ場所が多く（椅子用で約 350か所）、初めてだと大変です。**プリント基板を業者に発注し、部品を付けた状態で届けてもらう**方法もあります（設計データが必要なので、その場合は相談してください）。ステップ7までは、どちらの方法でも同じです。
+> **はんだ付けをしたくない場合**：本番の基板は、**部品が付いた状態のプリント基板を注文**できます（設計データ作成済み。手順は [09](09_pcb_order_guide.md)）。その場合、ステップ4〜6・8は不要で、ステップ7（マット作り）と、届いた基板への書き込みだけになります。ステップ4〜5 の練習回路は、マットの性質を試したいときだけ行えば十分です。
 
 ---
 
@@ -105,8 +105,9 @@
 ## 3. Pico にプログラムを書き込む
 
 1. Arduino IDE で「ファイル」→「開く」→ `ChairMotion\firmware\pressure_pad\pressure_pad.ino` を開く。
-2. 上のほうにある次の行を、**練習用の `PAD_TEST` に書き換える**：
+2. 上のほうにある次の2行を書き換える（**手作り回路用の `BOARD_PICO_DIY`** と、**練習用の `PAD_TEST`**）：
    ```
+   #define BOARD BOARD_PICO_DIY  // <- BOARD_PICO_DIY for the hand-built Pico circuit
    #define PAD_KIND PAD_TEST  // <- change to PAD_FLOOR / PAD_TEST
    ```
 3. 「ツール」→「ボード」→「Raspberry Pi Pico/RP2040/RP2350」→「**Raspberry Pi Pico**」を選ぶ。
@@ -358,7 +359,7 @@ Pico のピン番号は、**基板の裏の印字**（または「Pico pinout」
 
 ## 9. つないで動かす
 
-1. Arduino IDE で `pressure_pad.ino` の `PAD_KIND` を **`PAD_CHAIR`**（椅子用の Pico）または **`PAD_FLOOR`**（床用の Pico）に書き換えて、それぞれ書き込む。
+1. Arduino IDE で `pressure_pad.ino` の `BOARD` を **`BOARD_PICO_DIY`** に、`PAD_KIND` を **`PAD_CHAIR`**（椅子用の Pico）または **`PAD_FLOOR`**（床用の Pico）に書き換えて、それぞれ書き込む（注文したプリント基板の場合は 09 §7）。
 2. 練習で決めた Rf を基板に付けておく。
 3. マットのケーブルを基板の J1〜J4 に挿す（ソケットの向きに注意。赤い線が1番ピン側）。
 4. `py viewer.py --port COM5`（椅子）／ `py viewer.py --port COM6`（床）。Rf を 1kΩ 以外にした場合は `--rf 470` のように付け足す。

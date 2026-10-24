@@ -4,14 +4,15 @@ Binary frame, little endian:
     offset size  field
     0      4     magic b"CMSP"
     4      1     version (1)
-    5      1     flags (bit0: an ADC reading saturated)
+    5      1     flags (bit0: an ADC reading saturated, bit1: Vb range changing, values unreliable)
     6      1     rows (seat + back)
     7      1     cols
     8      4     seq
     12     8     device time at scan start [us]
     20     2     vb_raw (ADC reading of the Vb reference)
     22     1     main_rows (rows [0, main_rows) are seat/floor, the rest back)
-    23     1     kind (0 = chair: seat + back, 1 = floor, 2 = 4x4 practice circuit)
+    23     1     low nibble: kind (0 = chair: seat + back, 1 = floor, 2 = 4x4 practice circuit)
+                 high nibble: board (0 = Pico + hand-built circuit, 1 = assembled PCB v1)
     24     2*R*C raw ADC values, row-major
     end-2  2     CRC-16/CCITT-FALSE over bytes [4, end-2)
 
@@ -29,9 +30,12 @@ MAGIC = b"CMSP"
 VERSION = 1
 HEADER = struct.Struct("<4sBBBBIQHBB")
 FLAG_SATURATED = 0x01
+FLAG_SETTLING = 0x02
 KIND_CHAIR = 0
 KIND_FLOOR = 1
 KIND_TEST = 2
+BOARD_PICO_DIY = 0
+BOARD_PCB_V1 = 1
 MAX_TEXT_LINE = 256
 
 
@@ -54,6 +58,7 @@ class Frame:
     main_rows: int
     raw: np.ndarray  # (rows, cols) uint16
     kind: int = KIND_CHAIR
+    board: int = BOARD_PICO_DIY
 
     @property
     def main(self) -> np.ndarray:
@@ -74,7 +79,7 @@ def encode_frame(frame: Frame) -> bytes:
     rows, cols = frame.raw.shape
     body = HEADER.pack(
         MAGIC, VERSION, frame.flags, rows, cols, frame.seq & 0xFFFFFFFF,
-        frame.device_t_us, frame.vb_raw, frame.main_rows, frame.kind,
+        frame.device_t_us, frame.vb_raw, frame.main_rows, frame.kind | (frame.board << 4),
     ) + frame.raw.astype("<u2").tobytes()
     return body + struct.pack("<H", crc16_ccitt(body[4:]))
 
@@ -110,9 +115,10 @@ class StreamParser:
             if self._buf[:4] != MAGIC:
                 self._skip_to_candidate()
                 continue
-            _, version, flags, rows, cols, seq, t_us, vb, main_rows, kind = HEADER.unpack_from(self._buf)
+            _, version, flags, rows, cols, seq, t_us, vb, main_rows, kind_board = HEADER.unpack_from(self._buf)
+            kind, board = kind_board & 0x0F, kind_board >> 4
             n = frame_len(rows, cols)
-            if version != VERSION or rows == 0 or cols == 0 or main_rows > rows or kind > KIND_TEST:
+            if version != VERSION or rows == 0 or cols == 0 or main_rows > rows or kind > KIND_TEST or board > BOARD_PCB_V1:
                 del self._buf[0]
                 continue
             if len(self._buf) < n:
@@ -124,7 +130,7 @@ class StreamParser:
                 del self._buf[0]
                 continue
             raw = np.frombuffer(payload, dtype="<u2", count=rows * cols, offset=HEADER.size)
-            out.append(Frame(seq, t_us, flags, vb, main_rows, raw.reshape(rows, cols).copy(), kind))
+            out.append(Frame(seq, t_us, flags, vb, main_rows, raw.reshape(rows, cols).copy(), kind, board))
             del self._buf[:n]
         return out
 
@@ -143,6 +149,13 @@ class Electrical:
     adc_vref: float = 3.3
     adc_max: int = 4095
     row_driver_ohm: float = 2.0  # on-resistance of the low-side row driver
+
+    @staticmethod
+    def for_board(board: int, rf_ohm: float | None = None) -> "Electrical":
+        """Defaults per board; `rf_ohm` overrides (hand-built boards may use another Rf)."""
+        if board == BOARD_PCB_V1:
+            return Electrical(rf_ohm=rf_ohm or 2200.0, row_driver_ohm=0.05)  # AO3400A switches
+        return Electrical(rf_ohm=rf_ohm or 1000.0, row_driver_ohm=2.0)  # TBD62083A
 
 
 def conductance_us(frame: Frame, el: Electrical = Electrical()) -> np.ndarray:

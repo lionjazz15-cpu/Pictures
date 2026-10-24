@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from features import FLOOR_GEOMETRY, SEAT_GEOMETRY, FootTracker, center_of_pressure, detect_feet
-from protocol import KIND_CHAIR, KIND_FLOOR, KIND_TEST, Electrical, Frame, StreamParser, conductance_us, encode_frame
+from protocol import FLAG_SATURATED, FLAG_SETTLING, KIND_CHAIR, KIND_FLOOR, KIND_TEST, Electrical, Frame, StreamParser, conductance_us, encode_frame
 
 BASELINE_FRAMES = 30
 KIND_NAMES = {KIND_CHAIR: "chair", KIND_FLOOR: "floor", KIND_TEST: "test"}
@@ -273,7 +273,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", help="serial port of the Pico")
     ap.add_argument("--fake", choices=["chair", "floor", "test"], help="use synthetic data instead of hardware")
-    ap.add_argument("--rf", type=float, default=1000.0, help="TIA feedback resistor [ohm]")
+    ap.add_argument("--rf", type=float, help="TIA feedback resistor [ohm] (default: 2200 on the PCB, 1000 hand-built)")
     ap.add_argument("--vmax", type=float, default=1500.0, help="color scale max [uS]")
     ap.add_argument("--out", type=Path, default=Path("recordings"))
     args = ap.parse_args()
@@ -283,7 +283,6 @@ def main() -> None:
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation
 
-    electrical = Electrical(rf_ohm=args.rf)
     fake_kinds = {name: kind for kind, name in KIND_NAMES.items()}
     source = FakeSource(fake_kinds[args.fake]) if args.fake else SerialSource(args.port)
     frames: queue.Queue = queue.Queue()
@@ -299,6 +298,7 @@ def main() -> None:
         source.close()
         raise SystemExit("no frames received: check the port and that the firmware is flashed")
     frames.put((first, first_ns))
+    electrical = Electrical.for_board(first.board, args.rf)
     if first.kind == KIND_FLOOR:
         view = FloorView(plt, args.vmax)
     elif first.kind == KIND_TEST:
@@ -346,7 +346,7 @@ def main() -> None:
         if now - fps["t"] >= 1.0:
             fps["value"] = fps["n"] / (now - fps["t"])
             fps["n"], fps["t"] = 0, now
-        sat = " SATURATED" if latest.flags & 1 else ""
+        sat = (" SATURATED" if latest.flags & FLAG_SATURATED else "") + (" (range change)" if latest.flags & FLAG_SETTLING else "")
         offset = "-" if sync.offset_ns is None else f"{sync.offset_ns / 1e6:.1f}ms"
         info.set_text(
             f"{fps['value']:5.1f} fps  seq {latest.seq}  clk-offset {offset}{sat}\n{summary}\n"

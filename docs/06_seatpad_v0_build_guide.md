@@ -124,7 +124,7 @@ GP23 は Pico 基板内部の電源モードの切り替え。ファームウェ
 
 ## 6. 立ち上げとテスト
 
-1. **ファームウェアを書き込む**：Arduino IDE で「Raspberry Pi Pico/RP2040」（Earle F. Philhower 版）のボードを追加 → `firmware/pressure_pad/pressure_pad.ino` を開き、先頭の `#define PAD_KIND` が `PAD_CHAIR` になっていることを確認して書き込む。
+1. **ファームウェアを書き込む**：Arduino IDE で「Raspberry Pi Pico/RP2040」（Earle F. Philhower 版）のボードを追加 → `firmware/pressure_pad/pressure_pad.ino` を開き、先頭の `#define BOARD` を `BOARD_PICO_DIY` に、`#define PAD_KIND` を `PAD_CHAIR` にして書き込む（部品付きプリント基板の場合は [09](09_pcb_order_guide.md)）。
 2. **PC ツール**：
    ```
    cd tools/pressure_pad

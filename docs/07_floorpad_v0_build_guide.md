@@ -49,7 +49,7 @@
 
 ## 5. 立ち上げとテスト
 
-1. `pressure_pad.ino` の `#define PAD_KIND` を `PAD_FLOOR` にして書き込む。
+1. `pressure_pad.ino` の `#define PAD_KIND` を `PAD_FLOOR` に（手作り回路なら `#define BOARD` も `BOARD_PICO_DIY` に）して書き込む。
 2. 抵抗による1点テスト（06 §6 の 4）：J1 の 4番と J2 の 6番の間に 4.7kΩ → 行3・列5 だけが光ればよい。
 3. 表示：
    ```
