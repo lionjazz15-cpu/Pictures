@@ -11,6 +11,7 @@ VTuber 向けの、**装着ゼロ・ポン置き**の着席型3Dモーション�
 | 02 | [技術仕様書](docs/02_technical_specification.md) | 要求仕様、ハードウェア、信号処理、融合AI、IK、同期・キャリブレーション、電波法、Go/No-Go 判定 |
 | 03 | [商用ライセンス確認表](docs/03_license_matrix.md) | コード・重み・データセット・人体モデル・SDK |
 | 04 | [実装計画・原価・リスク](docs/04_implementation_plan.md) | MVP、着手の順番、部品表、原価の概算、リスク |
+| 05 | [低コスト化プラン](docs/05_low_cost_plan.md) | ToF を先に試す構成、開発機材 約3〜4.5万円、Lite / Standard / Pro のラインナップ |
 
 ## 設計の要点（TL;DR）
 
