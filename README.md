@@ -14,13 +14,14 @@ VTuber 向けの、**装着ゼロ・ポン置き**の着席型3Dモーション�
 | 05 | [低コスト化プラン](docs/05_low_cost_plan.md) | ToF を先に試す構成、開発機材 約3〜4.5万円、Lite / Standard / Pro のラインナップ |
 | 06 | [椅子マット v0 製作ガイド](docs/06_seatpad_v0_build_guide.md) | 座面＋背もたれの汎用マット（448点・60Hz）、ゼロ電位法の回路、部品表、作り方、テスト手順 |
 | 07 | [床マット v0 製作ガイド](docs/07_floorpad_v0_build_guide.md) | 60×48cm・256点、足の接地（左右・かかと／つま先）と位置の検出 |
+| 08 | [**はじめての製作ガイド**](docs/08_beginner_guide.md) | 電子工作が初めての人向け。道具・PC の準備・書き込み・はんだ付けなしの練習回路（4×4）・本番の作り方・困ったとき |
 
 ## コード
 
 | パス | 内容 |
 |---|---|
-| `firmware/pressure_pad/` | Raspberry Pi Pico 用ファームウェア（椅子・床マット共通、`PAD_KIND` で切り替え。Arduino、Earle Philhower 版コア） |
-| `tools/pressure_pad/` | PC 用ヒートマップ表示・記録ツール、足の検出、通信プロトコル、テスト（`python viewer.py --fake chair` / `--fake floor` で実機なしでも動く） |
+| `firmware/pressure_pad/` | Raspberry Pi Pico 用ファームウェア（椅子・床マット・練習回路共通、`PAD_KIND` で切り替え。デバッグ用コマンド `DUMP` / `HOLD` あり。Arduino、Earle Philhower 版コア） |
+| `tools/pressure_pad/` | PC 用ヒートマップ表示・記録ツール、足の検出、通信プロトコル、テスト（`--fake chair` / `--fake floor` / `--fake test` で実機なしでも動く） |
 
 ## 構成（v0.2）
 

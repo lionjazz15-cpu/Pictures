@@ -4,6 +4,7 @@
     python viewer.py --port /dev/ttyACM0       # Linux
     python viewer.py --fake chair              # no hardware: synthetic sitter
     python viewer.py --fake floor              # no hardware: synthetic feet
+    python viewer.py --fake test               # no hardware: 4x4 practice circuit
 
 Keys: z = capture empty baseline (step off / stand up first), r = start/stop recording, q = quit.
 """
@@ -20,10 +21,10 @@ from pathlib import Path
 import numpy as np
 
 from features import FLOOR_GEOMETRY, SEAT_GEOMETRY, FootTracker, center_of_pressure, detect_feet
-from protocol import KIND_CHAIR, KIND_FLOOR, Electrical, Frame, StreamParser, conductance_us, encode_frame
+from protocol import KIND_CHAIR, KIND_FLOOR, KIND_TEST, Electrical, Frame, StreamParser, conductance_us, encode_frame
 
 BASELINE_FRAMES = 30
-KIND_NAMES = {KIND_CHAIR: "chair", KIND_FLOOR: "floor"}
+KIND_NAMES = {KIND_CHAIR: "chair", KIND_FLOOR: "floor", KIND_TEST: "test"}
 
 
 class TimeSync:
@@ -106,16 +107,23 @@ class FakeSource:
             out += _blob(s, 3, cx, 0.9, 0.9, 0.5 * heel) + _blob(s, 8, cx, 1.1, 1.0, 0.5 * fore)
         return out
 
+    def _test(self, t: float) -> np.ndarray:
+        # a finger pressing one cell after another
+        out = np.zeros((4, 4))
+        k = int(t) % 16
+        out[k // 4, k % 4] = 0.5 + 0.5 * np.sin(t * np.pi) ** 2
+        return out
+
     def read(self) -> bytes:
         now = time.monotonic()
         if now < self.next:
             time.sleep(self.next - now)
         self.next += self.period
         t = self.next - self.t0
-        signal = self._chair(t) if self.kind == KIND_CHAIR else self._floor(t)
+        signal = {KIND_CHAIR: self._chair, KIND_FLOOR: self._floor, KIND_TEST: self._test}[self.kind](t)
         vb_raw = 2048
         raw = np.clip(vb_raw + signal * 1500 + np.random.normal(0, 6, signal.shape), 0, 4095).astype(np.uint16)
-        frame = Frame(self.seq, int(t * 1e6), 0, vb_raw, 16, raw, self.kind)
+        frame = Frame(self.seq, int(t * 1e6), 0, vb_raw, signal.shape[0], raw, self.kind)
         self.seq += 1
         text = "".join(line + "\n" for line in self.pending).encode()
         self.pending.clear()
@@ -206,6 +214,29 @@ class ChairView:
         return f"seat {seat.sum():8.0f}  back {back.sum():7.0f}  COP L/R {lr}"
 
 
+class TestView:
+    """4x4 practice circuit: big cells with the value printed in each."""
+
+    def __init__(self, plt, vmax: float) -> None:
+        self.fig, ax = plt.subplots(figsize=(6, 6))
+        self.im = ax.imshow(np.zeros((4, 4)), vmin=0, vmax=vmax, cmap="inferno", origin="lower")
+        ax.set_title("Practice 4x4 (row 0 at the bottom)")
+        ax.set_xticks(range(4))
+        ax.set_yticks(range(4))
+        ax.set_xlabel("column")
+        ax.set_ylabel("row")
+        self.texts = [[ax.text(c, r, "", ha="center", va="center", color="c", fontsize=12) for c in range(4)] for r in range(4)]
+        self.fig.colorbar(self.im, ax=ax, label="conductance [uS]", shrink=0.8)
+
+    def draw(self, g: np.ndarray, main_rows: int) -> str:
+        self.im.set_data(g)
+        for r in range(4):
+            for c in range(4):
+                self.texts[r][c].set_text(f"{g[r, c]:.0f}")
+        r, c = np.unravel_index(np.argmax(g), g.shape)
+        return f"max at row {r}, col {c}: {g[r, c]:.0f} uS (~{1e6 / max(g[r, c], 1e-3):.0f} ohm)"
+
+
 class FloorView:
     def __init__(self, plt, vmax: float) -> None:
         self.fig, ax = plt.subplots(figsize=(7, 6))
@@ -241,7 +272,7 @@ class FloorView:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", help="serial port of the Pico")
-    ap.add_argument("--fake", choices=["chair", "floor"], help="use synthetic data instead of hardware")
+    ap.add_argument("--fake", choices=["chair", "floor", "test"], help="use synthetic data instead of hardware")
     ap.add_argument("--rf", type=float, default=1000.0, help="TIA feedback resistor [ohm]")
     ap.add_argument("--vmax", type=float, default=1500.0, help="color scale max [uS]")
     ap.add_argument("--out", type=Path, default=Path("recordings"))
@@ -253,7 +284,8 @@ def main() -> None:
     from matplotlib.animation import FuncAnimation
 
     electrical = Electrical(rf_ohm=args.rf)
-    source = FakeSource(KIND_FLOOR if args.fake == "floor" else KIND_CHAIR) if args.fake else SerialSource(args.port)
+    fake_kinds = {name: kind for kind, name in KIND_NAMES.items()}
+    source = FakeSource(fake_kinds[args.fake]) if args.fake else SerialSource(args.port)
     frames: queue.Queue = queue.Queue()
     sync = TimeSync()
     stop = threading.Event()
@@ -269,6 +301,8 @@ def main() -> None:
     frames.put((first, first_ns))
     if first.kind == KIND_FLOOR:
         view = FloorView(plt, args.vmax)
+    elif first.kind == KIND_TEST:
+        view = TestView(plt, args.vmax)
     else:
         view = ChairView(plt, args.vmax, first.raw.shape[0] - first.main_rows)
     fig = view.fig

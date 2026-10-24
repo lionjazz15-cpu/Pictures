@@ -1,6 +1,6 @@
 import numpy as np
 
-from protocol import KIND_FLOOR, Electrical, Frame, StreamParser, conductance_us, crc16_ccitt, encode_frame
+from protocol import KIND_FLOOR, KIND_TEST, Electrical, Frame, StreamParser, conductance_us, crc16_ccitt, encode_frame
 
 
 def make_frame(seq=7, rows=28, cols=16):
@@ -63,3 +63,15 @@ def test_row_driver_drop_increases_conductance():
     g0 = conductance_us(Frame(0, 0, 0, 2048, 16, raw), Electrical(row_driver_ohm=0.0))
     g1 = conductance_us(Frame(0, 0, 0, 2048, 16, raw), Electrical(row_driver_ohm=5.0))
     assert np.all(g1 > g0)
+
+
+def test_test_kind_4x4_roundtrip():
+    raw = np.full((4, 4), 2100, dtype=np.uint16)
+    (out,) = StreamParser().feed(encode_frame(Frame(1, 2, 0, 2048, 4, raw, KIND_TEST)))
+    assert out.kind == KIND_TEST and out.raw.shape == (4, 4)
+
+
+def test_debug_dump_lines_are_text():
+    dump = b"#DUMP vb=2047 (about 2048 is normal)\n#row0 :    0   12  300    0\n"
+    items = StreamParser().feed(dump)
+    assert items == ["DUMP vb=2047 (about 2048 is normal)", "row0 :    0   12  300    0"]

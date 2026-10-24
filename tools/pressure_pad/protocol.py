@@ -11,7 +11,7 @@ Binary frame, little endian:
     12     8     device time at scan start [us]
     20     2     vb_raw (ADC reading of the Vb reference)
     22     1     main_rows (rows [0, main_rows) are seat/floor, the rest back)
-    23     1     kind (0 = chair: seat + back, 1 = floor)
+    23     1     kind (0 = chair: seat + back, 1 = floor, 2 = 4x4 practice circuit)
     24     2*R*C raw ADC values, row-major
     end-2  2     CRC-16/CCITT-FALSE over bytes [4, end-2)
 
@@ -31,6 +31,7 @@ HEADER = struct.Struct("<4sBBBBIQHBB")
 FLAG_SATURATED = 0x01
 KIND_CHAIR = 0
 KIND_FLOOR = 1
+KIND_TEST = 2
 MAX_TEXT_LINE = 256
 
 
@@ -111,7 +112,7 @@ class StreamParser:
                 continue
             _, version, flags, rows, cols, seq, t_us, vb, main_rows, kind = HEADER.unpack_from(self._buf)
             n = frame_len(rows, cols)
-            if version != VERSION or rows == 0 or cols == 0 or main_rows > rows or kind > KIND_FLOOR:
+            if version != VERSION or rows == 0 or cols == 0 or main_rows > rows or kind > KIND_TEST:
                 del self._buf[0]
                 continue
             if len(self._buf) < n:

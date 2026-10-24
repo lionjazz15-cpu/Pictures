@@ -4,6 +4,7 @@
 // Set PAD_KIND below before flashing: one Pico per pad.
 //   PAD_CHAIR: 28 rows x 16 cols (seat 16 rows + back 12 rows, columns shared)
 //   PAD_FLOOR: 16 rows x 16 cols
+//   PAD_TEST : 4 rows x 4 cols (breadboard practice circuit, docs/08)
 //
 // Scans a piezoresistive matrix with the zero-potential method:
 //   - every column is held at Vb by a transimpedance amplifier (TIA)
@@ -16,12 +17,17 @@
 //   binary frame : "CMSP" + header + uint16 raw[ROWS*COLS] + crc16 (little endian)
 //   text replies : lines starting with '#'
 //   commands     : START, STOP, INFO, PING <host_ns>, RATE <hz>
+//   debug (usable from the Arduino IDE serial monitor):
+//                  DUMP        print one scan as text (ADC counts above Vb)
+//                  HOLD <row>  stop streaming and keep <row> selected (-1 = none),
+//                              so row voltages can be checked with a multimeter
 
 #include <Arduino.h>
 
 #define PAD_CHAIR 0
 #define PAD_FLOOR 1
-#define PAD_KIND PAD_CHAIR  // <- change to PAD_FLOOR for the floor mat
+#define PAD_TEST 2
+#define PAD_KIND PAD_CHAIR  // <- change to PAD_FLOOR / PAD_TEST
 
 // ---- pin map --------------------------------------------------------------
 static const uint8_t PIN_SRCLK = 2;   // 74HC595 SRCLK (shift clock)
@@ -37,15 +43,21 @@ static const uint8_t PIN_SMPS_PWM = 23; // HIGH = PWM mode, lower ADC noise
 static const uint8_t MAIN_ROWS = 16;    // seat
 static const uint8_t EXTRA_ROWS = 12;   // back
 static const uint8_t DRIVER_BITS = 32;  // 4 x 74HC595
+static const uint8_t COLS = 16;
 #elif PAD_KIND == PAD_FLOOR
 static const uint8_t MAIN_ROWS = 16;    // floor
 static const uint8_t EXTRA_ROWS = 0;
 static const uint8_t DRIVER_BITS = 16;  // 2 x 74HC595
+static const uint8_t COLS = 16;
+#elif PAD_KIND == PAD_TEST
+static const uint8_t MAIN_ROWS = 4;     // practice mat
+static const uint8_t EXTRA_ROWS = 0;
+static const uint8_t DRIVER_BITS = 8;   // 1 x 74HC595
+static const uint8_t COLS = 4;          // mux channels C0..C3
 #else
 #error "unknown PAD_KIND"
 #endif
 static const uint8_t ROWS = MAIN_ROWS + EXTRA_ROWS;
-static const uint8_t COLS = 16;
 // Shift-register output index for each logical row.
 // Main rows 0..15 -> U1/U2 Q0..Q7, back rows 0..11 -> U3 Q0..Q7, U4 Q0..Q3.
 static uint8_t rowToBit(uint8_t row) { return row; }
@@ -124,12 +136,11 @@ static uint16_t readAdc(uint8_t pin) {
 }
 
 // ---- scanning -------------------------------------------------------------
-static void scanFrame() {
-  uint64_t t0 = micros64();
+// Fills the data part of frameBuf; returns flags.
+static uint8_t scanInto(uint16_t &vb) {
   uint8_t flags = 0;
   uint8_t *data = frameBuf + HEADER_LEN;
-
-  uint16_t vb = readAdc(PIN_ADC_VB);
+  vb = readAdc(PIN_ADC_VB);
   for (uint8_t r = 0; r < ROWS; r++) {
     selectDriverBit(rowToBit(r));
     delayMicroseconds(ROW_SETTLE_US);
@@ -142,6 +153,34 @@ static void scanFrame() {
     }
   }
   selectDriverBit(-1);  // release all rows between frames
+  return flags;
+}
+
+static uint16_t cellAt(uint8_t r, uint8_t c) {
+  const uint8_t *p = frameBuf + HEADER_LEN + 2 * (r * COLS + c);
+  return p[0] | (p[1] << 8);
+}
+
+static void dumpFrame() {
+  uint16_t vb;
+  uint8_t flags = scanInto(vb);
+  Serial.printf("#DUMP vb=%u (about 2048 is normal)%s\n", vb, flags & FLAG_SATURATED ? " SATURATED" : "");
+  for (uint8_t r = 0; r < ROWS; r++) {
+    String line = "#row" + String(r) + (r < 10 ? " " : "") + ":";
+    for (uint8_t c = 0; c < COLS; c++) {
+      int v = (int)cellAt(r, c) - (int)vb;
+      String cell = String(v < 0 ? 0 : v);
+      while (cell.length() < 5) cell = " " + cell;
+      line += cell;
+    }
+    Serial.println(line);
+  }
+}
+
+static void scanFrame() {
+  uint64_t t0 = micros64();
+  uint16_t vb;
+  uint8_t flags = scanInto(vb);
 
   uint8_t *h = frameBuf;
   memcpy(h, "CMSP", 4);
@@ -166,10 +205,23 @@ static void handleCommand(const String &line) {
   } else if (line == "STOP") {
     streaming = false;
   } else if (line == "INFO") {
+    static const char *kindNames[] = {"chair", "floor", "test"};
     Serial.printf("#INFO {\"fw\":\"pressure_pad_v0\",\"kind\":\"%s\",\"proto\":%u,\"rows\":%u,"
                   "\"main_rows\":%u,\"cols\":%u,\"rate_hz\":%lu}\n",
-                  PAD_KIND == PAD_CHAIR ? "chair" : "floor", PROTO_VERSION, ROWS, MAIN_ROWS, COLS,
-                  1000000UL / framePeriodUs);
+                  kindNames[PAD_KIND], PROTO_VERSION, ROWS, MAIN_ROWS, COLS, 1000000UL / framePeriodUs);
+  } else if (line == "DUMP") {
+    streaming = false;
+    dumpFrame();
+  } else if (line.startsWith("HOLD ")) {
+    streaming = false;
+    long row = line.substring(5).toInt();
+    if (row >= 0 && row < ROWS) {
+      selectDriverBit(rowToBit(row));
+      Serial.printf("#OK row %ld is now at 0 V, the other rows should be at Vb (about 1.65 V)\n", row);
+    } else {
+      selectDriverBit(-1);
+      Serial.println("#OK no row selected, all rows should be at Vb (about 1.65 V)");
+    }
   } else if (line.startsWith("PING ")) {
     // Echo the host timestamp with our clock, for offset/drift estimation.
     Serial.printf("#PONG %s %s\n", line.substring(5).c_str(), u64ToStr(micros64()));
