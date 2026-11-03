@@ -137,6 +137,23 @@ class ToonHairSettings(bpy.types.PropertyGroup):
     mirror_x: BoolProperty(name="X ミラー", default=False, update=_upd,
                            description="頭の中心のX軸で左右対称に生成")
 
+    # --- connected sheet (1房ずつ独立しない髪) ---
+    connect: BoolProperty(name="毛束を連結", default=False, update=_upd,
+                          description="隣り合う毛束を根元〜途中まで1枚の面でつなぎ、毛先だけ分かれるギザギザの髪にする")
+    order: EnumProperty(
+        name="並び順",
+        items=[('AZIMUTH', "頭の周り順", "根元の方位角で自動ソート"),
+               ('CURVE', "カーブ順", "スプラインを作った順")],
+        default='AZIMUTH', update=_upd)
+    connect_ratio: FloatProperty(name="連結する距離", default=1.8, min=0.1, soft_max=6.0, update=_upd,
+                                 description="根元同士がこの距離(幅比)以内ならつなぐ。離れていれば別の塊になる")
+    split: FloatProperty(name="切れ込み位置", default=0.55, min=0.0, max=1.0, update=_upd,
+                         description="ここ(根元0〜毛先1)より先で毛束が分かれる")
+    notch_soft: FloatProperty(name="切れ込みの開き", default=0.5, min=0.02, max=1.0, update=_upd,
+                              description="小さいほど切れ込みが急に開く")
+    seam_thickness: FloatProperty(name="つなぎ目の厚み", default=0.6, min=0.0, max=1.0, update=_upd,
+                                  description="厚みありの時、毛束同士の境目に残す厚み。0で深い溝")
+
     # --- shading ---
     normal_mode: EnumProperty(
         name="法線",
@@ -228,17 +245,27 @@ def _head_dir(az_deg, el_deg):
     return Vector((math.sin(az) * math.cos(el), -math.cos(az) * math.cos(el), math.sin(el)))
 
 
-def _strand_points(center, az, el0, el1, r0, r1, n=4, drop=0.0):
-    """Points hugging a head sphere from elevation el0 down to el1."""
+def _strand_points(center, az0, az1, el0, el1, r0, r1, n=4, hang=0.0, flare=0.0):
+    """Points from (az0, el0) to (az1, el1) around the head.
+
+    Above the equator the strand hugs the head; below it, it hangs down
+    (gravity) instead of wrapping under the chin. ``hang`` lengthens the
+    hanging part, ``flare`` spreads it outward.
+    """
     c = center.matrix_world.to_translation()
     R = _head_radius(center)
     pts = []
     for k in range(n):
         f = k / (n - 1)
-        el = el0 + (el1 - el0) * f
+        fa = 1.0 - (1.0 - f) ** 2.5          # spread out quickly from the crown
+        az = math.radians(az0 + (az1 - az0) * fa)
+        el = math.radians(el0 + (el1 - el0) * f)
         r = (r0 + (r1 - r0) * f) * R
-        p = c + _head_dir(az, el) * r
-        p.z -= drop * R * f * f
+        horiz = Vector((math.sin(az), -math.cos(az), 0.0))
+        if el >= 0.0:
+            p = c + horiz * (r * math.cos(el)) + Vector((0, 0, r * math.sin(el)))
+        else:
+            p = c + horiz * (r * (1.0 + flare * f * f)) + Vector((0, 0, r * math.sin(el) * (1.0 + hang)))
         pts.append(p)
     return pts
 
@@ -280,7 +307,7 @@ class TOONHAIR_OT_add_group(bpy.types.Operator):
             bpy.ops.object.mode_set(mode='OBJECT')
         center = _find_center(context) or _create_center(context)
         R = _head_radius(center)
-        pts = _strand_points(center, 0.0, 55.0, 5.0, 1.0, 1.15)
+        pts = _strand_points(center, 0.0, 0.0, 80.0, 5.0, 1.0, 1.15)
         ob = _new_group(context, self.name, center, [pts], width=R * 0.35,
                         outline_width=R * 0.012, flip_offset=R * 0.003)
         for o in context.selected_objects:
@@ -383,24 +410,29 @@ class TOONHAIR_OT_sample(bpy.types.Operator):
         common = dict(outline_width=R * 0.012, flip_offset=R * 0.003)
 
         bangs = []
-        for i in range(9):
-            az = -48 + i * 12
-            ln = 1.0 - abs(az) / 160.0
-            bangs.append(_strand_points(center, az, 62, 62 - 62 * ln, 1.0, 1.12 + 0.05 * ln))
-        _new_group(context, "Hair_Bangs", center, bangs, width=R * 0.36, root_ratio=0.9,
-                   bulge_pos=0.3, tip_shape=1.3, **common)
+        for i in range(11):
+            az = -55 + i * 11
+            ln = 1.0 - abs(az) / 140.0
+            bangs.append(_strand_points(center, az * 0.3, az, 84, 60 - 55 * ln, 1.0,
+                                        1.1 + 0.06 * ln, n=4))
+        _new_group(context, "Hair_Bangs", center, bangs, width=R * 0.32, root_ratio=0.5,
+                   bulge_pos=0.45, tip_shape=1.3, connect=True, split=0.55, **common)
 
-        sides = [_strand_points(center, 72, 45, -70, 1.02, 1.2, n=5, drop=1.2),
-                 _strand_points(center, 88, 40, -80, 1.04, 1.18, n=5, drop=1.6)]
-        _new_group(context, "Hair_Side", center, sides, width=R * 0.42, mirror_x=True,
-                   root_ratio=0.8, bulge_pos=0.35, tip_shape=1.6, **common)
+        sides = [_strand_points(center, 30, 62, 84, -50, 1.02, 1.13, n=5, hang=0.5, flare=0.1),
+                 _strand_points(center, 45, 76, 83, -62, 1.03, 1.15, n=5, hang=0.7, flare=0.12),
+                 _strand_points(center, 60, 90, 82, -70, 1.04, 1.17, n=5, hang=0.9, flare=0.15),
+                 _strand_points(center, 80, 102, 83, -76, 1.05, 1.18, n=5, hang=1.0, flare=0.2)]
+        _new_group(context, "Hair_Side", center, sides, width=R * 0.4, mirror_x=True,
+                   root_ratio=0.5, bulge_pos=0.45, tip_shape=1.6, connect=True, split=0.6, **common)
 
         back = []
-        for i in range(10):
-            az = 105 + i * 16.7
-            back.append(_strand_points(center, az, 70, -60, 1.02, 1.22, n=5, drop=2.2))
-        _new_group(context, "Hair_Back", center, back, width=R * 0.55, root_ratio=0.85,
-                   bulge_pos=0.4, tip_shape=1.8, thickness=0.3, **common)
+        for i in range(15):
+            az = 88 + i * 13.14
+            back.append(_strand_points(center, 180 + (az - 180) * 0.5, az, 84, -90, 1.02, 1.17,
+                                       n=6, hang=1.3, flare=0.25))
+        _new_group(context, "Hair_Back", center, back, width=R * 0.5, root_ratio=0.45,
+                   bulge_pos=0.5, tip_shape=1.8, thickness=0.3, connect=True, split=0.7,
+                   **common)
 
         c = center.matrix_world.to_translation()
         ahoge = [[c + _head_dir(10, 88) * R * 0.98,
@@ -604,6 +636,32 @@ class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
         lay.label(text="ヒント: 編集モードで Alt+S=部分的な幅, Ctrl+T=ねじり", icon='INFO')
 
 
+class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
+    bl_label = "連結 (つながった髪)"
+    bl_parent_id = "TOONHAIR_PT_main"
+
+    @classmethod
+    def poll(cls, context):
+        return active_group(context) is not None
+
+    def draw_header(self, context):
+        self.layout.prop(active_group(context).toon_hair, "connect", text="")
+
+    def draw(self, context):
+        st = active_group(context).toon_hair
+        lay = self.layout
+        lay.use_property_split = True
+        lay.use_property_decorate = False
+        lay.active = st.connect
+        lay.prop(st, "order")
+        lay.prop(st, "connect_ratio")
+        lay.prop(st, "split")
+        lay.prop(st, "notch_soft")
+        sub = lay.column()
+        sub.enabled = st.backface == 'CLOSED'
+        sub.prop(st, "seam_thickness")
+
+
 class TOONHAIR_PT_shading(_Panel, bpy.types.Panel):
     bl_label = "シェーディング"
     bl_parent_id = "TOONHAIR_PT_main"
@@ -702,6 +760,7 @@ classes = (
     TOONHAIR_OT_reset_material,
     TOONHAIR_PT_main,
     TOONHAIR_PT_shape,
+    TOONHAIR_PT_connect,
     TOONHAIR_PT_shading,
     TOONHAIR_PT_outline,
 )

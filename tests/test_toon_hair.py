@@ -1,0 +1,143 @@
+"""Headless tests for Toon Hair Studio.
+
+Run with a Python that has the `bpy` module (pip install bpy) or with
+    blender -b --python tests/test_toon_hair.py
+"""
+
+import itertools
+import os
+import sys
+
+import bpy
+from mathutils import Vector
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+import toon_hair_studio as th  # noqa: E402
+from toon_hair_studio import build  # noqa: E402
+
+FAILS = []
+
+
+def check(cond, msg):
+    if not cond:
+        FAILS.append(msg)
+
+
+def edge_use(me):
+    use = {}
+    for p in me.polygons:
+        vs = list(p.vertices)
+        for a in range(len(vs)):
+            k = tuple(sorted((vs[a], vs[(a + 1) % len(vs)])))
+            use[k] = use.get(k, 0) + 1
+    return use
+
+
+def analyse(ob, st, tag):
+    me = st.hair_object.data
+    t_attr = me.attributes["TH_t"].data
+    inner = me.attributes["TH_inner"].data
+    check(len(me.polygons) > 0, f"{tag}: no faces")
+    sizes = [len(p.vertices) for p in me.polygons]
+    ngons = sum(1 for s in sizes if s > 4)
+    check(ngons == 0, f"{tag}: {ngons} n-gons")
+    # triangles only at tips
+    for p in me.polygons:
+        if len(p.vertices) == 3:
+            check(max(t_attr[v].value for v in p.vertices) > 0.999, f"{tag}: triangle away from tip")
+            break
+    # no degenerate faces
+    small = sum(1 for p in me.polygons if p.area < 1e-12)
+    check(small == 0, f"{tag}: {small} degenerate faces")
+    use = edge_use(me)
+    over = sum(1 for c in use.values() if c > 2)
+    check(over == 0, f"{tag}: {over} non-manifold edges (>2 faces)")
+    if st.backface == 'CLOSED':
+        # only the root opening may be boundary
+        bad = [k for k, c in use.items() if c == 1
+               and max(t_attr[k[0]].value, t_attr[k[1]].value) > 1e-6]
+        check(not bad, f"{tag}: {len(bad)} open edges outside the root")
+    # outer faces must face away from the head
+    center = th.core.Center(st.center.matrix_world)
+    mw = st.hair_object.matrix_world
+    good = total = 0
+    for p in me.polygons:
+        if any(inner[v].value > 0.5 for v in p.vertices):
+            continue
+        c = mw @ p.center
+        n = (mw.to_3x3() @ p.normal).normalized()
+        total += 1
+        good += n.dot(center.radial(c)) > -0.2
+    check(total == 0 or good / total > 0.97, f"{tag}: only {good}/{total} outer faces face outward")
+    check(me.has_custom_normals, f"{tag}: no custom normals")
+    if st.outline:
+        om = st.outline_object.data
+        check(len(om.polygons) > 0, f"{tag}: empty outline")
+        ouse = edge_use(om)
+        check(all(c <= 2 for c in ouse.values()), f"{tag}: outline non-manifold")
+    return len(me.vertices), len(me.polygons), sizes.count(3)
+
+
+def main():
+    th.register()
+    bpy.ops.toon_hair.sample_hairstyle()
+    groups = [o for o in bpy.data.objects if build.is_group(o)]
+    check(len(groups) == 4, "sample should create 4 groups")
+    rows = []
+    for ob in groups:
+        st = ob.toon_hair
+        for connect, bf, lod, prof, tip in itertools.product(
+                (False, True), ('CLOSED', 'FLIPPED', 'SINGLE'), ('LOW', 'MID', 'HIGH'),
+                ('LENS', 'RIDGE', 'ROUND', 'FLAT'), ('POINT', 'BLUNT')):
+            th._suspend_update = True
+            st.connect, st.backface, st.lod, st.profile, st.tip_mode = connect, bf, lod, prof, tip
+            th._suspend_update = False
+            st.length_segments, st.profile_segments = th.LOD_TABLE[lod]
+            build.rebuild(ob)
+            tag = f"{ob.name}/{'conn' if connect else 'indep'}/{bf}/{lod}/{prof}/{tip}"
+            if tip == 'BLUNT':
+                # blunt closed tips use one cap n-gon per lock by design
+                me = st.hair_object.data
+                if bf == 'CLOSED':
+                    continue
+                check(all(len(p.vertices) == 4 for p in me.polygons), f"{tag}: blunt should be all quads")
+                continue
+            v, f, tris = analyse(ob, st, tag)
+            if prof == 'LENS':
+                rows.append((tag, v, f, tris))
+        # restore defaults
+        th._suspend_update = True
+        st.backface, st.lod, st.profile, st.tip_mode = 'CLOSED', 'MID', 'LENS', 'POINT'
+        th._suspend_update = False
+    for r in rows:
+        if "/MID/" in r[0]:
+            print("%-40s verts %5d faces %5d tris %3d" % r)
+
+    # live update via depsgraph: move a control point
+    ob = bpy.data.objects["Hair_Bangs"]
+    hm = ob.toon_hair.hair_object.data
+    before = [v.co.copy() for v in hm.vertices]
+    ob.data.splines[0].bezier_points[-1].co.z -= 0.02
+    ob.data.update_tag()
+    bpy.context.view_layer.update()
+    moved = max((a.co - b).length for a, b in zip(hm.vertices, before))
+    check(moved > 1e-4, "live update via depsgraph handler did not rebuild")
+
+    # bake
+    res = bpy.ops.toon_hair.bake('EXEC_DEFAULT', with_outline=True)
+    check(res == {'FINISHED'}, "bake failed")
+    baked = bpy.data.objects.get("Hair_Baked")
+    check(baked is not None and baked.data.has_custom_normals, "baked mesh lacks custom normals")
+    check(baked is not None and "TH_pin" in baked.vertex_groups, "baked mesh lacks TH_pin")
+
+    if FAILS:
+        print("\n".join(FAILS[:40]))
+        print(f"FAILED: {len(FAILS)} checks")
+        sys.exit(1)
+    print("ALL TESTS PASSED")
+
+
+if __name__ == "__main__":
+    main()

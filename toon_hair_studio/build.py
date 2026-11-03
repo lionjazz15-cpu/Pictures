@@ -18,6 +18,7 @@ PARAM_KEYS = (
     "tip_mode", "tip_min", "root_cap", "twist", "root_extend", "flip_offset",
     "normal_mode", "normal_blend", "outline", "outline_width",
     "outline_tip_ratio", "outline_taper_start",
+    "connect", "connect_ratio", "split", "notch_soft", "seam_thickness", "order",
 )
 
 _building = False
@@ -49,21 +50,14 @@ def center_of(settings):
 
 
 def generate(curve_ob, world=True, with_outline=True):
-    """Return (hair Geo, outline Geo or None) for a hair group, world space."""
+    """Return (hair Geo, outline Geo or None) for a hair group."""
     st = curve_ob.toon_hair
     prm = params_from(st)
     center = center_of(st)
-    hair = core.Geo()
-    outline = core.Geo() if (with_outline and st.outline) else None
     mw = curve_ob.matrix_world
-    for spline in curve_ob.data.splines:
-        samples = core.sample_spline(spline, mw)
-        if len(samples) < 2:
-            continue
-        core.build_strand(samples, center, prm, hair, outline)
-        if st.mirror_x:
-            ms = [(center.mirror(p), r, t) for p, r, t in samples]
-            core.build_strand(ms, center, prm, hair, outline, mirrored=True)
+    samples = [s for s in (core.sample_spline(sp, mw) for sp in curve_ob.data.splines) if len(s) >= 2]
+    hair, outline = core.build_group(samples, center, prm, mirror=st.mirror_x,
+                                     with_outline=with_outline)
     if not world:
         inv = mw.inverted_safe()
         hair.transform(inv)
@@ -101,14 +95,9 @@ def write_mesh(me, geo, custom_normals=True):
     me.clear_geometry()
     me.from_pydata([v[:] for v in geo.verts], [], geo.faces)
 
-    nloops = len(me.loops)
-    if nloops:
-        vidx = [0] * nloops
-        me.loops.foreach_get("vertex_index", vidx)
+    if len(me.loops):
         uvl = me.uv_layers.get("UVMap") or me.uv_layers.new(name="UVMap")
-        flat = []
-        for vi in vidx:
-            flat.extend(geo.uv[vi])
+        flat = [c for uvs in geo.face_uv for uv in uvs for c in uv]
         uvl.data.foreach_set("uv", flat)
 
     if geo.verts:
