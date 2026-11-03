@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Toon Hair Studio - clean-topology stylized anime hair for VTuber models.
+"""Toon Hair Studio - clean-topology anime hair meshes for VRM / VRChat.
 
-Draw / edit Bezier guide curves; every spline becomes a quad-only strand
-(pointed triangle tip) with:
+Draw / edit Bezier guide curves; every spline becomes a quad-only lock
+(triangles only at pointed tips) with:
   * Low / Mid / High poly presets
-  * backface mode: single sheet / flipped back polygons / closed volume
-  * head-volume custom normals for clean anime shading
-  * generated inverted-hull outline with tapered tips
-  * EEVEE toon material with inner-side colour and an angel ring
+  * backface mode: closed volume / flipped back polygons / single sheet
+  * branching locks (分岐毛) and lateral connection (横連結)
+  * optional head-volume custom normals
+  * optional inverted-hull outline mesh with tapered tips
 """
 
 bl_info = {
@@ -16,7 +16,7 @@ bl_info = {
     "version": (1, 0, 0),
     "blender": (4, 2, 0),
     "location": "3D View > Sidebar > ToonHair",
-    "description": "Clean-topology stylized anime hair (VTuber) with toon shading & outlines",
+    "description": "Clean-topology anime hair meshes for VRM / VRChat (branching, connected locks, outline)",
     "category": "Mesh",
 }
 
@@ -137,7 +137,26 @@ class ToonHairSettings(bpy.types.PropertyGroup):
     mirror_x: BoolProperty(name="X ミラー", default=False, update=_upd,
                            description="頭の中心のX軸で左右対称に生成")
 
-    # --- connected sheet (1房ずつ独立しない髪) ---
+    # --- branching (分岐毛) ---
+    branches: IntProperty(name="分岐数", default=1, min=1, max=6, update=_upd,
+                          description="1本のガイドから途中で分かれる毛先の数")
+    branch_jitter: IntProperty(name="分岐数のばらつき", default=0, min=0, max=2, update=_upd,
+                               description="房ごとにランダムで ±この数だけ分岐数を変える")
+    branch_pos: FloatProperty(name="分岐位置", default=0.5, min=0.05, max=0.9, update=_upd)
+    branch_spread: FloatProperty(name="広がり", default=0.25, min=0.0, soft_max=1.5, update=_upd,
+                                 description="分岐後に毛先が外へ開く量(幅比)")
+    branch_length_var: FloatProperty(name="長さの差", default=0.25, min=0.0, max=0.65, update=_upd,
+                                     description="分岐後の部分を最大どれだけ短くするか(比率)")
+    branch_pattern: EnumProperty(
+        name="長さパターン",
+        items=[('CENTER', "中央が長い", ""),
+               ('OUTER', "外側が長い", ""),
+               ('RANDOM', "ランダム", ""),
+               ('EVEN', "均等", "")],
+        default='CENTER', update=_upd)
+    seed: IntProperty(name="シード", default=0, min=0, update=_upd)
+
+    # --- connected sheet (1房ずつ独立しない髪 / 横連結) ---
     connect: BoolProperty(name="毛束を連結", default=False, update=_upd,
                           description="隣り合う毛束を根元〜途中まで1枚の面でつなぎ、毛先だけ分かれるギザギザの髪にする")
     order: EnumProperty(
@@ -146,7 +165,7 @@ class ToonHairSettings(bpy.types.PropertyGroup):
                ('CURVE', "カーブ順", "スプラインを作った順")],
         default='AZIMUTH', update=_upd)
     connect_ratio: FloatProperty(name="連結する距離", default=1.8, min=0.1, soft_max=6.0, update=_upd,
-                                 description="根元同士がこの距離(幅比)以内ならつなぐ。離れていれば別の塊になる")
+                                 description="房の中間地点同士がこの距離(幅比)以内ならつなぐ。離れていれば別の塊になる")
     split: FloatProperty(name="切れ込み位置", default=0.55, min=0.0, max=1.0, update=_upd,
                          description="ここ(根元0〜毛先1)より先で毛束が分かれる")
     notch_soft: FloatProperty(name="切れ込みの開き", default=0.5, min=0.02, max=1.0, update=_upd,
@@ -157,15 +176,16 @@ class ToonHairSettings(bpy.types.PropertyGroup):
     # --- shading ---
     normal_mode: EnumProperty(
         name="法線",
-        items=[('VOLUME', "頭の球体", "頭の楕円体方向へ法線をブレンド(アニメ影の定番)"),
-               ('SMOOTH', "スムーズ", "形状そのままのスムーズ法線"),
-               ('PROXY', "プロキシ転写", "指定メッシュからData Transferで法線転写")],
+        items=[('VOLUME', "あり: 頭の球体", "カスタム法線あり。頭の楕円体方向へブレンドし、影が塊でまとまる(アニメ髪の定番)"),
+               ('NONE', "なし", "カスタム法線なし。普通のスムーズシェード"),
+               ('PROXY', "あり: プロキシ転写", "指定メッシュからData Transferで法線転写")],
         default='VOLUME', update=_upd)
     normal_blend: FloatProperty(name="ブレンド", default=0.6, min=0.0, max=1.0, update=_upd)
     normal_proxy: PointerProperty(name="プロキシ", type=bpy.types.Object, poll=_is_mesh, update=_upd)
 
     # --- outline ---
-    outline: BoolProperty(name="アウトライン", default=True, update=_upd)
+    outline: BoolProperty(name="アウトライン", default=False, update=_upd,
+                          description="反転ハルのアウトラインメッシュを生成(MToon/lilToon/Poiyomiのシェーダー線を使うなら不要)")
     outline_width: FloatProperty(name="線の太さ", default=0.0012, min=0.0, soft_max=0.01,
                                  subtype='DISTANCE', unit='LENGTH', update=_upd)
     outline_tip_ratio: FloatProperty(name="毛先の線の細さ", default=0.15, min=0.0, max=1.0,
@@ -198,6 +218,7 @@ def _create_center(context, location=None, radius=0.1):
     ob.scale = (radius, radius, radius)
     ob.location = location if location is not None else context.scene.cursor.location
     context.scene.collection.objects.link(ob)
+    context.view_layer.update()          # make matrix_world valid right away
     return ob
 
 
@@ -267,6 +288,35 @@ def _strand_points(center, az0, az1, el0, el1, r0, r1, n=4, hang=0.0, flare=0.0)
         else:
             p = c + horiz * (r * (1.0 + flare * f * f)) + Vector((0, 0, r * math.sin(el) * (1.0 + hang)))
         pts.append(p)
+    return pts
+
+
+def _whorl_strand(center, whorl, az, el_end, r_end=1.12, n=5, hang=0.0, flare=0.0, drop_n=2):
+    """Guide from the crown whorl over the head (great circle) to (az, el_end).
+
+    Below the equator the guide stops hugging the head and hangs down."""
+    c = center.matrix_world.to_translation()
+    R = _head_radius(center)
+    hanging = el_end < 0.0
+    end = _head_dir(az, 0.0 if hanging else el_end)
+    w = whorl.normalized()
+    ang = w.angle(end)
+    axis = w.cross(end)
+    pts = []
+    for k in range(n):
+        f = k / (n - 1)
+        if axis.length > 1e-6:
+            from mathutils import Quaternion
+            d = Quaternion(axis.normalized(), ang * f) @ w
+        else:
+            d = w
+        pts.append(c + d * (R * (1.0 + (r_end - 1.0) * f)))
+    if hanging:
+        horiz = Vector((end.x, end.y, 0.0)).normalized()
+        depth = R * math.sin(math.radians(-el_end)) * (1.0 + hang)
+        for k in range(1, drop_n + 1):
+            f = k / drop_n
+            pts.append(c + horiz * (R * r_end * (1.0 + flare * f)) - Vector((0, 0, depth * f)))
     return pts
 
 
@@ -409,30 +459,34 @@ class TOONHAIR_OT_sample(bpy.types.Operator):
         R = _head_radius(center)
         common = dict(outline_width=R * 0.012, flip_offset=R * 0.003)
 
-        bangs = []
-        for i in range(11):
-            az = -55 + i * 11
-            ln = 1.0 - abs(az) / 140.0
-            bangs.append(_strand_points(center, az * 0.3, az, 84, 60 - 55 * ln, 1.0,
-                                        1.1 + 0.06 * ln, n=4))
-        _new_group(context, "Hair_Bangs", center, bangs, width=R * 0.32, root_ratio=0.5,
-                   bulge_pos=0.45, tip_shape=1.3, connect=True, split=0.55, **common)
+        # all guides grow from one crown whorl with thin roots, so the locks
+        # fan out like an umbrella and tile the head without overlapping
+        whorl = _head_dir(180, 72)
+        thin = dict(root_ratio=0.12, bulge_pos=0.55, connect=True, connect_ratio=2.2)
 
-        sides = [_strand_points(center, 30, 62, 84, -50, 1.02, 1.13, n=5, hang=0.5, flare=0.1),
-                 _strand_points(center, 45, 76, 83, -62, 1.03, 1.15, n=5, hang=0.7, flare=0.12),
-                 _strand_points(center, 60, 90, 82, -70, 1.04, 1.17, n=5, hang=0.9, flare=0.15),
-                 _strand_points(center, 80, 102, 83, -76, 1.05, 1.18, n=5, hang=1.0, flare=0.2)]
-        _new_group(context, "Hair_Side", center, sides, width=R * 0.4, mirror_x=True,
-                   root_ratio=0.5, bulge_pos=0.45, tip_shape=1.6, connect=True, split=0.6, **common)
+        # 前髪: 5本のガイド、それぞれ2〜3本に分岐 + 横連結
+        bangs = [_whorl_strand(center, whorl, az, -2 + abs(az) * 0.3, 1.13, n=6)
+                 for az in (-50, -25, 0, 25, 50)]
+        _new_group(context, "Hair_Bangs", center, bangs, width=R * 0.6, tip_shape=2.4,
+                   split=0.7, branches=2, branch_jitter=1, branch_pos=0.8,
+                   branch_spread=0.2, branch_length_var=0.45, branch_pattern='RANDOM',
+                   seed=3, **dict(thin, bulge_pos=0.6), **common)
 
-        back = []
-        for i in range(15):
-            az = 88 + i * 13.14
-            back.append(_strand_points(center, 180 + (az - 180) * 0.5, az, 84, -90, 1.02, 1.17,
-                                       n=6, hang=1.3, flare=0.25))
-        _new_group(context, "Hair_Back", center, back, width=R * 0.5, root_ratio=0.45,
-                   bulge_pos=0.5, tip_shape=1.8, thickness=0.3, connect=True, split=0.7,
-                   **common)
+        # 横髪: 3本に分岐する房 (ミラー)
+        sides = [_whorl_strand(center, whorl, az, -60, 1.12, n=6, hang=0.5 + i * 0.3,
+                               flare=0.1 + i * 0.05)
+                 for i, az in enumerate((62, 82, 102))]
+        _new_group(context, "Hair_Side", center, sides, width=R * 0.6, mirror_x=True,
+                   tip_shape=1.8, split=0.55, branches=3, branch_pos=0.68, branch_spread=0.3,
+                   branch_length_var=0.5, branch_pattern='CENTER', **thin, **common)
+
+        # 後ろ髪: 2本に分岐 + 横連結
+        back = [_whorl_strand(center, whorl, az, -80, 1.14, n=6, hang=1.3, flare=0.22)
+                for az in (115, 137, 159, 180, 201, 223, 245)]
+        _new_group(context, "Hair_Back", center, back, width=R * 0.72, tip_shape=1.8,
+                   thickness=0.3, split=0.7, branches=2, branch_jitter=1, branch_pos=0.8,
+                   branch_spread=0.12, branch_length_var=0.45, branch_pattern='RANDOM',
+                   seed=7, **thin, **common)
 
         c = center.matrix_world.to_translation()
         ahoge = [[c + _head_dir(10, 88) * R * 0.98,
@@ -502,53 +556,6 @@ class TOONHAIR_OT_bake(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class TOONHAIR_OT_toon_view(bpy.types.Operator):
-    bl_idname = "toon_hair.toon_view"
-    bl_label = "トゥーン表示設定"
-    bl_description = "EEVEE + Standard色変換(AgXだと色がくすむため)に設定"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        sc = context.scene
-        for eng in ('BLENDER_EEVEE_NEXT', 'BLENDER_EEVEE'):
-            try:
-                sc.render.engine = eng
-                break
-            except TypeError:
-                continue
-        try:
-            sc.view_settings.view_transform = 'Standard'
-            sc.view_settings.look = 'None'
-        except TypeError:
-            pass
-        for area in context.screen.areas if context.screen else []:
-            if area.type == 'VIEW_3D':
-                for space in area.spaces:
-                    if space.type == 'VIEW_3D':
-                        space.shading.type = 'MATERIAL'
-        return {'FINISHED'}
-
-
-class TOONHAIR_OT_reset_material(bpy.types.Operator):
-    bl_idname = "toon_hair.reset_material"
-    bl_label = "マテリアルを初期化"
-    bl_description = "髪/線マテリアルのノードを作り直す"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        return active_group(context) is not None
-
-    def execute(self, context):
-        st = active_group(context).toon_hair
-        if st.material is not None:
-            materials.build_hair_material(st.material)
-        if st.outline_material is not None:
-            materials.build_outline_material(st.outline_material)
-        build.rebuild(active_group(context))
-        return {'FINISHED'}
-
-
 # ==========================================================================
 # UI
 # ==========================================================================
@@ -574,7 +581,6 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
         row.operator("toon_hair.rebuild", icon='FILE_REFRESH').all = False
         row.operator("toon_hair.rebuild", text="全て", icon='FILE_REFRESH').all = True
         col.operator("toon_hair.bake", icon='EXPORT')
-        col.operator("toon_hair.toon_view", icon='SHADING_RENDERED')
         g = active_group(context)
         if g is None:
             lay.label(text="毛束グループを選択してください", icon='INFO')
@@ -583,6 +589,10 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
             box.label(text=g.name, icon='CURVE_DATA')
             st = g.toon_hair
             box.prop(st, "auto_update")
+            tri = build.triangle_count(st.hair_object)
+            total = sum(build.triangle_count(o.toon_hair.hair_object)
+                        for o in bpy.data.objects if build.is_group(o))
+            box.label(text=f"三角形: {tri:,}  (全グループ {total:,})", icon='MESH_DATA')
             row = box.row(align=True)
             row.prop(st, "center")
             if st.center is None:
@@ -636,8 +646,36 @@ class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
         lay.label(text="ヒント: 編集モードで Alt+S=部分的な幅, Ctrl+T=ねじり", icon='INFO')
 
 
+class TOONHAIR_PT_branch(_Panel, bpy.types.Panel):
+    bl_label = "分岐毛"
+    bl_parent_id = "TOONHAIR_PT_main"
+
+    @classmethod
+    def poll(cls, context):
+        return active_group(context) is not None
+
+    def draw(self, context):
+        st = active_group(context).toon_hair
+        lay = self.layout
+        lay.use_property_split = True
+        lay.use_property_decorate = False
+        lay.prop(st, "branches")
+        col = lay.column()
+        col.active = st.branches > 1 or st.branch_jitter > 0
+        col.prop(st, "branch_jitter")
+        col.prop(st, "branch_pos")
+        col.prop(st, "branch_spread")
+        col.prop(st, "branch_length_var")
+        col.prop(st, "branch_pattern")
+        col.prop(st, "seed")
+        col.prop(st, "notch_soft")
+        sub = col.column()
+        sub.enabled = st.backface == 'CLOSED'
+        sub.prop(st, "seam_thickness")
+
+
 class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
-    bl_label = "連結 (つながった髪)"
+    bl_label = "横連結 (隣の房とつなぐ)"
     bl_parent_id = "TOONHAIR_PT_main"
 
     @classmethod
@@ -663,7 +701,7 @@ class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
 
 
 class TOONHAIR_PT_shading(_Panel, bpy.types.Panel):
-    bl_label = "シェーディング"
+    bl_label = "法線 / マテリアル"
     bl_parent_id = "TOONHAIR_PT_main"
 
     @classmethod
@@ -676,15 +714,12 @@ class TOONHAIR_PT_shading(_Panel, bpy.types.Panel):
         lay.use_property_split = True
         lay.use_property_decorate = False
         lay.prop(st, "normal_mode")
-        if st.normal_mode != 'SMOOTH':
+        if st.normal_mode != 'NONE':
             lay.prop(st, "normal_blend")
         if st.normal_mode == 'PROXY':
             lay.prop(st, "normal_proxy")
         lay.separator()
         lay.prop(st, "material")
-        materials.draw_material_controls(lay, st.material)
-        lay.operator("toon_hair.reset_material", icon='NODE_MATERIAL')
-
 
 class TOONHAIR_PT_outline(_Panel, bpy.types.Panel):
     bl_label = "アウトライン"
@@ -707,7 +742,7 @@ class TOONHAIR_PT_outline(_Panel, bpy.types.Panel):
         lay.prop(st, "outline_tip_ratio")
         lay.prop(st, "outline_taper_start")
         lay.prop(st, "outline_material")
-        materials.draw_outline_controls(lay, st.outline_material)
+
 
 
 # ==========================================================================
@@ -756,10 +791,9 @@ classes = (
     TOONHAIR_OT_sample,
     TOONHAIR_OT_rebuild,
     TOONHAIR_OT_bake,
-    TOONHAIR_OT_toon_view,
-    TOONHAIR_OT_reset_material,
     TOONHAIR_PT_main,
     TOONHAIR_PT_shape,
+    TOONHAIR_PT_branch,
     TOONHAIR_PT_connect,
     TOONHAIR_PT_shading,
     TOONHAIR_PT_outline,

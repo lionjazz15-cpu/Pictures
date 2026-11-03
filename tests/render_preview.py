@@ -12,7 +12,7 @@ from mathutils import Vector
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import toon_hair_studio as th  # noqa: E402
-from toon_hair_studio import build, materials  # noqa: E402
+from toon_hair_studio import build  # noqa: E402
 
 OUT = sys.argv[-1] if len(sys.argv) > 1 and not sys.argv[-1].endswith(".py") else os.path.join(ROOT, "docs")
 RES = int(os.environ.get("TH_RES", "720"))
@@ -42,7 +42,7 @@ def setup_scene():
     # background visible to the camera only; lighting comes from the sun
     amb = nt.nodes.new("ShaderNodeBackground")
     amb.inputs[0].default_value = (1, 1, 1, 1)
-    amb.inputs[1].default_value = 0.08
+    amb.inputs[1].default_value = 0.35
     lp = nt.nodes.new("ShaderNodeLightPath")
     mix = nt.nodes.new("ShaderNodeMixShader")
     out = nt.nodes.get("World Output")
@@ -67,17 +67,13 @@ def setup_scene():
     neck = bpy.context.active_object
     bpy.ops.object.shade_smooth()
     skin = bpy.data.materials.new("Skin")
-    materials.build_hair_material(skin, lit=(1.0, 0.86, 0.78), shade=(0.93, 0.68, 0.62),
-                                  inner=(0.9, 0.7, 0.65))
-    nodes = skin.node_tree.nodes
-    nodes[materials.N_RING_STR].outputs[0].default_value = 0.0
-    nodes[materials.N_INNER_STR].outputs[0].default_value = 0.0
-    nodes[materials.N_RIM_STR].outputs[0].default_value = 0.0
+    skin.use_nodes = True
+    skin.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (1.0, 0.82, 0.74, 1)
     for o in (head, neck):
         o.data.materials.append(skin)
 
     sun = bpy.data.objects.new("Sun", bpy.data.lights.new("Sun", 'SUN'))
-    sun.data.energy = 1.6
+    sun.data.energy = 3.0
     sun.rotation_euler = (math.radians(55), 0.0, math.radians(-50))
     sc.collection.objects.link(sun)
 
@@ -86,6 +82,9 @@ def setup_scene():
     sc.collection.objects.link(cam)
     sc.camera = cam
     bpy.ops.toon_hair.sample_hairstyle()
+    for ob in bpy.data.objects:
+        if build.is_group(ob):
+            ob.toon_hair.outline = True      # show the optional mesh outline
     return sc, cam, c
 
 
@@ -103,7 +102,8 @@ def topology_mode(on):
     for ob in list(bpy.data.objects):
         if build.is_group(ob):
             h = ob.toon_hair.hair_object
-            ob.toon_hair.outline_object.hide_render = on
+            if ob.toon_hair.outline_object:
+                ob.toon_hair.outline_object.hide_render = on
             mod = h.modifiers.get("TH_Wire")
             if on and mod is None:
                 mod = h.modifiers.new("TH_Wire", 'WIREFRAME')

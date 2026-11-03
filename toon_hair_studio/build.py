@@ -19,6 +19,8 @@ PARAM_KEYS = (
     "normal_mode", "normal_blend", "outline", "outline_width",
     "outline_tip_ratio", "outline_taper_start",
     "connect", "connect_ratio", "split", "notch_soft", "seam_thickness", "order",
+    "branches", "branch_jitter", "branch_pos", "branch_spread", "branch_length_var",
+    "branch_pattern", "seed",
 )
 
 _building = False
@@ -103,7 +105,6 @@ def write_mesh(me, geo, custom_normals=True):
     if geo.verts:
         _float_attr(me, "TH_t", geo.t)
         _float_attr(me, "TH_inner", geo.inner)
-        _vec_attr(me, "TH_head", geo.head)
 
     if hasattr(me, "shade_smooth"):
         me.shade_smooth()
@@ -209,7 +210,7 @@ def rebuild(curve_ob):
         hair, outline = generate(curve_ob, world=False)
 
         hob = st.hair_object
-        write_mesh(hob.data, hair)
+        write_mesh(hob.data, hair, custom_normals=st.normal_mode == 'VOLUME')
         write_vertex_groups(hob, hair)
         _assign_material(hob.data, st.material)
         _sync_proxy_modifier(hob, st)
@@ -228,6 +229,18 @@ def rebuild(curve_ob):
                 oob.hide_render = True
     finally:
         _building = False
+
+
+def triangle_count(ob):
+    if ob is None or ob.type != 'MESH':
+        return 0
+    me = ob.data
+    n = len(me.polygons)
+    if not n:
+        return 0
+    tot = [0] * n
+    me.polygons.foreach_get("loop_total", tot)
+    return sum(tot) - 2 * n
 
 
 def rebuild_all(only_center=None):
@@ -254,7 +267,7 @@ def bake(groups, name="Hair_Baked", with_outline=False, collection=None):
 
     collection = collection or bpy.context.scene.collection
     me = bpy.data.meshes.new(name)
-    write_mesh(me, hair)
+    write_mesh(me, hair, custom_normals=any(g.toon_hair.normal_mode == 'VOLUME' for g in groups))
     for m in mats:
         me.materials.append(m)
     me.polygons.foreach_set("material_index", face_mats)

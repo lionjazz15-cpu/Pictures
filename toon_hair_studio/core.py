@@ -16,7 +16,9 @@ A *sheet* is a run of adjacent locks. Neighbouring locks share their
 boundary vertices from the root down to the split point, then separate into
 individual pointed tips, which gives the classic connected anime hair mass
 with a serrated hem - still all quads, closed and manifold.
-Independent strands are simply sheets with one lock.
+Independent strands are simply sheets with one lock, and a branched lock
+(分岐毛) is a sheet of sub-locks grown from one guide curve that separate at
+the branch point.
 """
 
 import math
@@ -333,19 +335,27 @@ class StrandParams:
     twist = 0.0
     root_extend = 0.0
     flip_offset = 0.0003
-    normal_mode = 'VOLUME'    # VOLUME / SMOOTH / PROXY
+    normal_mode = 'VOLUME'    # NONE / VOLUME / PROXY
     normal_blend = 0.6
-    outline = True
+    outline = False
     outline_width = 0.0012
     outline_tip_ratio = 0.15
     outline_taper_start = 0.5
-    # connected sheets
+    # lateral connection (横連結)
     connect = False
     connect_ratio = 1.8
     split = 0.55
     notch_soft = 0.5
     seam_thickness = 0.6
     order = 'AZIMUTH'         # AZIMUTH / CURVE
+    # branching (分岐毛)
+    branches = 1
+    branch_jitter = 0
+    branch_pos = 0.5
+    branch_spread = 0.25
+    branch_length_var = 0.25
+    branch_pattern = 'CENTER'  # CENTER / OUTER / RANDOM / EVEN
+    seed = 0
 
     def __init__(self, **kw):
         for k, v in kw.items():
@@ -356,72 +366,212 @@ class StrandParams:
 # locks
 # --------------------------------------------------------------------------
 
-class Lock:
-    __slots__ = ("frames", "widths", "ts", "root", "az", "rev", "order")
+def _azimuth_rev(center, P, B, w):
+    """True if +B points towards decreasing head azimuth."""
+    a0 = center.head_coord(P)[0]
+    a1 = center.head_coord(P + B * max(w, 1e-4))[0]
+    return ((a1 - a0 + 0.5) % 1.0 - 0.5) < 0.0
 
-    def __init__(self, frames, widths, ts, center, order):
+
+class Lock:
+    """One pointed lock: rings of frames + widths + arc params."""
+    __slots__ = ("frames", "widths", "ts", "rev")
+
+    def __init__(self, frames, widths, ts, rev):
         self.frames = frames
         self.widths = widths
         self.ts = ts
-        self.root = frames[0][0]
-        self.az = center.head_coord(self.root)[0]
+        self.rev = rev
+
+
+class Unit:
+    """Everything grown from one guide spline: 1 lock, or N branched sub-locks
+    (ordered by increasing azimuth). Sub-locks are joined up to branch_row."""
+    __slots__ = ("locks", "mid", "az", "mid_width", "order", "branch_row")
+
+    def __init__(self, locks, mid, az, mid_width, order, branch_row):
+        # ordering / adjacency use the middle of the guide, not the root, so
+        # locks growing from one crown whorl still sort and connect correctly
+        self.locks = locks
+        self.mid = mid
+        self.az = az
+        self.mid_width = mid_width
         self.order = order
-        # does +B point towards increasing azimuth?
-        i = max(1, len(frames) // 3)
-        P, _T, _N, B = frames[i]
-        w = max(widths[i], 1e-4)
-        a0 = center.head_coord(P)[0]
-        a1 = center.head_coord(P + B * w)[0]
-        d = (a1 - a0 + 0.5) % 1.0 - 0.5
-        self.rev = d < 0.0
+        self.branch_row = branch_row
 
 
-def make_lock(samples, center, prm, mirrored=False, order=0):
+def _eval_at(samples, lengths, total, t):
+    target = min(max(t, 0.0), 1.0) * total
+    lo, hi = 0, len(lengths) - 1
+    while hi - lo > 1:
+        m = (lo + hi) // 2
+        if lengths[m] < target:
+            lo = m
+        else:
+            hi = m
+    seg = lengths[hi] - lengths[lo]
+    f = (target - lengths[lo]) / seg if seg > EPS else 0.0
+    a, b = samples[lo], samples[hi]
+    return a[0].lerp(b[0], f), a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f
+
+
+def _arc(samples):
+    lengths = [0.0]
+    for i in range(1, len(samples)):
+        lengths.append(lengths[-1] + (samples[i][0] - samples[i - 1][0]).length)
+    return lengths, lengths[-1]
+
+
+def _branch_count(prm, rng):
+    n = max(1, int(prm.branches))
+    j = int(prm.branch_jitter)
+    if j > 0:
+        n = max(1, n + rng.randint(-j, j))
+    return n
+
+
+def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None):
+    import random
+    rng = rng or random.Random(0)
     if prm.root_extend > 0.0 and len(samples) >= 2:
         p0, r0, t0 = samples[0]
         d = p0 - samples[1][0]
         if d.length > EPS:
             samples = [(p0 + d.normalized() * prm.root_extend, r0, t0)] + list(samples)
-    pts = resample(samples, max(2, prm.length_segments), prm.tip_bias)
-    if not pts:
+    lengths, total = _arc(samples)
+    if total < 1e-6:
         return None
-    frames = compute_frames(pts, center, twist=prm.twist, tilt_sign=-1.0 if mirrored else 1.0)
-    tip_min = 0.0 if prm.tip_mode == 'POINT' else prm.tip_min
-    widths = [prm.width * width_factor(p[3], prm.root_ratio, prm.bulge_pos, prm.tip_shape, tip_min)
-              * max(p[1], 0.0) for p in pts]
-    return Lock(frames, widths, [p[3] for p in pts], center, order)
+    segs = max(2, prm.length_segments)
+    tilt_sign = -1.0 if mirrored else 1.0
+    point_tip = prm.tip_mode == 'POINT'
+    tip_min = 0.0 if point_tip else prm.tip_min
+    bias = 1.0 + max(0.0, prm.tip_bias)
+    nb = _branch_count(prm, rng)
+    if segs < 4:
+        nb = 1
+
+    def parent_w(t, rad):
+        return prm.width * width_factor(t, prm.root_ratio, prm.bulge_pos, prm.tip_shape, tip_min) * max(rad, 0.0)
+
+    # ---- single lock -------------------------------------------------------
+    if nb == 1:
+        tl = [1.0 - (1.0 - i / segs) ** bias for i in range(segs + 1)]
+        pts = [(*_eval_at(samples, lengths, total, t), t) for t in tl]
+        frames = compute_frames(pts, center, twist=prm.twist, tilt_sign=tilt_sign)
+        widths = [parent_w(p[3], p[1]) for p in pts]
+        P, _T, _N, B = frames[len(frames) // 3]
+        lk = Lock(frames, widths, tl, _azimuth_rev(center, P, B, widths[len(frames) // 3]))
+        im = len(frames) // 2
+        Pm = frames[im][0]
+        return Unit([lk], Pm, center.head_coord(Pm)[0], widths[im], order, -1)
+
+    # ---- branched lock -------------------------------------------------------
+    tb = min(max(prm.branch_pos, 0.05), 0.9)
+    n_pre = min(max(int(round(tb * segs)), 1), segs - 2)
+    n_post = segs - n_pre
+    # parent frames on a fine grid, interpolated at any t
+    fine = 64
+    fpts = [(*_eval_at(samples, lengths, total, i / fine), i / fine) for i in range(fine + 1)]
+    fframes = compute_frames(fpts, center, twist=prm.twist, tilt_sign=tilt_sign)
+
+    def frame_at(t):
+        f = min(max(t, 0.0), 1.0) * fine
+        i = min(int(f), fine - 1)
+        a = f - i
+        A, C = fframes[i], fframes[i + 1]
+        P = A[0].lerp(C[0], a)
+        B = A[3].lerp(C[3], a).normalized()
+        rad = fpts[i][1] + (fpts[i + 1][1] - fpts[i][1]) * a
+        tilt = fpts[i][2] + (fpts[i + 1][2] - fpts[i][2]) * a
+        return P, B, rad, tilt
+
+    Pb, Bb, radb, _ = frame_at(tb)
+    Wb = parent_w(tb, radb)
+    xs = [-1.0 + (2.0 * k + 1.0) / nb for k in range(nb)]
+    xmax = max(abs(x) for x in xs) or 1.0
+    var = max(0.0, min(prm.branch_length_var, 0.95))
+    rev = _azimuth_rev(center, *frame_at(0.3)[:2], parent_w(0.3, 1.0))
+
+    locks = []
+    for k, xk in enumerate(xs):
+        if prm.branch_pattern == 'CENTER':
+            f = abs(xk) / xmax
+        elif prm.branch_pattern == 'OUTER':
+            f = 1.0 - abs(xk) / xmax
+        elif prm.branch_pattern == 'RANDOM':
+            f = rng.random()
+        else:
+            f = 0.0
+        # length variation is a fraction of the part after the branch point,
+        # and every branch keeps at least 35% of it
+        t_end = 1.0 - min(var, 0.65) * f * (1.0 - tb)
+        blen = (t_end - tb) / (1.0 - tb)
+        tl = [tb * i / n_pre for i in range(n_pre + 1)]
+        tl += [tb + (t_end - tb) * (1.0 - (1.0 - m / n_post) ** bias) for m in range(1, n_post + 1)]
+        pts, widths = [], []
+        for t in tl:
+            P, B, rad, tilt = frame_at(t)
+            if t <= tb + 1e-9:
+                W = parent_w(t, rad)
+                off = xk * W * 0.5
+                w = W / nb
+            else:
+                u = (t - tb) / max(t_end - tb, 1e-6)
+                off = xk * Wb * 0.5 + xk * prm.branch_spread * Wb * blen * (u ** 1.5)
+                w = Wb / nb * width_factor(u, 1.0, 0.25, prm.tip_shape, tip_min)
+            pts.append((P + B * off, rad, tilt, t))
+            widths.append(w)
+        frames = compute_frames(pts, center, twist=0.0, tilt_sign=tilt_sign, smooth_passes=1)
+        locks.append(Lock(frames, widths, tl, rev))
+    if rev:
+        locks.reverse()
+    Pm, _Bm, radm, _ = frame_at(0.5)
+    return Unit(locks, Pm, center.head_coord(Pm)[0], parent_w(0.5, radm), order, n_pre)
 
 
-def cluster_locks(locks, prm):
-    """Split locks into sheets (runs of adjacent locks)."""
+def cluster_units(units, prm):
+    """Group units into laterally connected runs (横連結)."""
     if not prm.connect:
-        return [[lk] for lk in locks]
+        return [[u] for u in units]
     if prm.order == 'CURVE':
-        seq = sorted(locks, key=lambda l: l.order)
+        seq = sorted(units, key=lambda u: u.order)
     else:
-        seq = sorted(locks, key=lambda l: l.az)
+        seq = sorted(units, key=lambda u: u.az)
         if len(seq) > 2:
-            # start the sequence after the largest azimuth gap
             gaps = [((seq[(i + 1) % len(seq)].az - seq[i].az) % 1.0, i) for i in range(len(seq))]
             _g, i = max(gaps)
             seq = seq[i + 1:] + seq[:i + 1]
-    sheets = [[seq[0]]] if seq else []
-    for lk in seq[1:]:
-        prev = sheets[-1][-1]
-        limit = prm.connect_ratio * 0.5 * (prev.widths[0] + lk.widths[0]) / max(prm.root_ratio, 0.05)
-        limit = max(limit, prm.connect_ratio * prm.width)
-        if (lk.root - prev.root).length <= limit:
-            sheets[-1].append(lk)
+    runs = [[seq[0]]] if seq else []
+    for u in seq[1:]:
+        prev = runs[-1][-1]
+        limit = prm.connect_ratio * 0.5 * (prev.mid_width + u.mid_width)
+        if (u.mid - prev.mid).length <= limit:
+            runs[-1].append(u)
         else:
-            sheets.append([lk])
-    return sheets
+            runs.append([u])
+    return runs
+
+
+def _lateral_row(a, b, split, rc):
+    row = -1
+    for i in range(rc):
+        if a.ts[i] <= split + 1e-9 and b.ts[i] <= split + 1e-9:
+            row = i
+    return row
 
 
 # --------------------------------------------------------------------------
 # sheet builder
 # --------------------------------------------------------------------------
 
-def build_sheet(locks, center, prm, hair, outline=None):
+def build_sheet(locks, split_rows, center, prm, hair, outline=None):
+    """locks ordered by azimuth; split_rows[b] = last shared row between
+    locks[b] and locks[b+1] (-1 = not shared).
+
+    Boundary b is shared over the row band [r0[b], r1[b]]. r0 is the first
+    row from which the two locks are properly side by side; above it (e.g.
+    where roots converge at the crown) they stay separate and merge at r0,
+    closed by a wall quad just like the notch at the tip side."""
     K = len(locks)
     closed = prm.backface == 'CLOSED'
     S = max(1, prm.profile_segments)
@@ -434,28 +584,56 @@ def build_sheet(locks, center, prm, hair, outline=None):
 
     nr = min(len(lk.frames) for lk in locks)
     point_tip = prm.tip_mode == 'POINT'
-    rc = nr - 1 if point_tip else nr           # rings with full cross-section
-    ts = locks[0].ts
+    rc = nr - 1 if point_tip else nr
+    r1 = [min(r, rc - 2) for r in split_rows]
+    r0 = []
+    for b in range(K - 1):
+        la, lb = locks[b], locks[b + 1]
+        start = r1[b] + 1
+        for i in range(r1[b], -1, -1):
+            Pa, _Ta, _Na, Ba = la.frames[i]
+            Pb, _Tb, _Nb, Bb = lb.frames[i]
+            d = (-Ba if la.rev else Ba) + (-Bb if lb.rev else Bb)
+            if d.length < EPS:
+                break
+            sep = (Pb - Pa).dot(d.normalized())
+            if sep < 0.35 * 0.5 * (la.widths[i] + lb.widths[i]):
+                break
+            start = i
+        # need at least two shared rows when the band does not start at the
+        # root, otherwise the root-side and tip-side notches would meet in a
+        # single (non-manifold) vertex
+        if start > r1[b] or (start > 0 and r1[b] - start < 1):
+            r1[b] = -1
+            start = 0
+        r0.append(start)
 
-    # last shared row (inclusive); -1 = nothing shared
-    i_split = -1
-    if K > 1:
-        for i in range(rc):
-            if ts[i] <= prm.split + 1e-9:
-                i_split = i
-        i_split = min(i_split, rc - 2)
+    def shared_b(b, i):
+        return r0[b] <= i <= r1[b]
 
-    def shared(i):
-        return i <= i_split
+    def left_shared(k, i):
+        return k > 0 and shared_b(k - 1, i)
 
-    def notch(i):
-        if shared(i):
+    def right_shared(k, i):
+        return k < K - 1 and shared_b(k, i)
+
+    def notch(b, i):
+        """0 = edges merged at the shared boundary, 1 = own edges."""
+        if shared_b(b, i):
             return 0.0
-        t0 = ts[i_split] if i_split >= 0 else 0.0
-        span = max((1.0 - t0) * prm.notch_soft, 1e-4)
-        return smoothstep(t0, t0 + span, ts[i])
+        ta, tb_ = locks[b].ts, locks[b + 1].ts
 
-    # ---- edges (in order space: oL = side towards previous lock) ----------
+        def tt(r):
+            return 0.5 * (ta[r] + tb_[r])
+        if r1[b] < 0:
+            return 1.0
+        if i < r0[b]:
+            return 1.0 - smoothstep(tt(0), tt(r0[b]), tt(i))
+        t0 = tt(r1[b])
+        span = max((tt(rc - 1) - t0) * prm.notch_soft, 1e-4)
+        return smoothstep(t0, t0 + span, tt(i))
+
+    # ---- edges in order space ------------------------------------------------
     oL = [[None] * rc for _ in range(K)]
     oR = [[None] * rc for _ in range(K)]
     for k, lk in enumerate(locks):
@@ -468,19 +646,25 @@ def build_sheet(locks, center, prm, hair, outline=None):
             oL[k][i], oR[k][i] = a, b
     eL = [row[:] for row in oL]
     eR = [row[:] for row in oR]
-    for k in range(1, K):
+    for b in range(K - 1):
+        la, lb = locks[b], locks[b + 1]
         for i in range(rc):
-            m = (oR[k - 1][i] + oL[k][i]) * 0.5
-            s = notch(i)
-            eR[k - 1][i] = m.lerp(oR[k - 1][i], s)
-            eL[k][i] = m.lerp(oL[k][i], s)
+            # shared boundary: sweep left -> right and split the span from this
+            # lock's (already resolved) left edge to the neighbour's right edge
+            # by width ratio. Keeps every lock's edges in order, so the sheet
+            # never folds even where roots converge at the crown.
+            wa, wb = la.widths[i], lb.widths[i]
+            f = wa / (wa + wb) if wa + wb > EPS else 0.5
+            m = eL[b][i].lerp(oR[b + 1][i], f)
+            s = notch(b, i)
+            eR[b][i] = m.lerp(oR[b][i], s)
+            eL[b + 1][i] = m.lerp(oL[b + 1][i], s)
 
-    # ---- vertex keys --------------------------------------------------------
     def is_shared_col(k, i, c):
-        return shared(i) and ((c == 0 and k > 0) or (c == S and k < K - 1))
+        return (c == 0 and left_shared(k, i)) or (c == S and right_shared(k, i))
 
     def key(side, k, i, c):
-        if c == 0 and k > 0 and shared(i):
+        if c == 0 and left_shared(k, i):
             return (side, i, k - 1, S)
         if closed and c in (0, S) and not is_shared_col(k, i, c):
             return ('E', i, k, c)
@@ -499,21 +683,20 @@ def build_sheet(locks, center, prm, hair, outline=None):
             order.append(kk)
             meta[kk] = (t, inner)
 
+    g_seam = prm.seam_thickness
+
     def env_at(k, i, c, x):
         e = env(x)
-        g = prm.seam_thickness
-        if is_shared_col(k, i, 0) and c * 2 <= S:
-            e = g + (1.0 - g) * e
-        elif is_shared_col(k, i, S) and c * 2 >= S:
-            e = g + (1.0 - g) * e
+        if (left_shared(k, i) and c * 2 <= S) or (right_shared(k, i) and c * 2 >= S):
+            e = g_seam + (1.0 - g_seam) * e
         return e
 
     for k, lk in enumerate(locks):
         for i in range(rc):
-            _P, _T, N, _B = lk.frames[i]
+            N = lk.frames[i][2]
             L, R = eL[k][i], eR[k][i]
             w = (R - L).length
-            t = ts[i]
+            t = lk.ts[i]
             for c in range(S + 1):
                 x = xs[c]
                 base = L.lerp(R, (x + 1.0) * 0.5)
@@ -525,7 +708,7 @@ def build_sheet(locks, center, prm, hair, outline=None):
                 else:
                     put(key('F', k, i, c), base + N * ym, t, 0.0)
         if point_tip:
-            put(('T', k), lk.frames[nr - 1][0], 1.0, 0.0)
+            put(('T', k), lk.frames[nr - 1][0], lk.ts[nr - 1], 0.0)
 
     g = Geo()
     index = {}
@@ -538,17 +721,15 @@ def build_sheet(locks, center, prm, hair, outline=None):
         g.verts.append(co)
         g.t.append(t)
         g.inner.append(inner)
-        az, h = center.head_coord(co)
-        g.head.append((az, h, t))
+        g.head.append((0.0, 0.0, t))
 
     def V(side, k, i, c):
         return index[key(side, k, i, c)]
 
-    # ---- faces --------------------------------------------------------------
     for k, lk in enumerate(locks):
-        # local column j runs along +B; order column c = j or S - j
         cols = list(range(S + 1)) if not lk.rev else list(range(S, -1, -1))
         us = [j / S for j in range(S + 1)]
+        ts = lk.ts
         for i in range(rc - 1):
             v0, v1 = ts[i], ts[i + 1]
             for j in range(S):
@@ -559,57 +740,61 @@ def build_sheet(locks, center, prm, hair, outline=None):
                 if closed:
                     g.add_face((V('B', k, i, cb), V('B', k, i, ca), V('B', k, i + 1, ca), V('B', k, i + 1, cb)),
                                ((ub, v0), (ua, v0), (ua, v1), (ub, v1)))
-        # tip
         i = rc - 1
         vt = ts[i]
+        loop = [(V('F', k, i, cols[j]), us[j]) for j in range(S + 1)]
         if closed:
-            loop = [(V('F', k, i, cols[j]), us[j]) for j in range(S + 1)]
             loop += [(V('B', k, i, cols[j]), us[j]) for j in range(S - 1, 0, -1)]
-        else:
-            loop = [(V('F', k, i, cols[j]), us[j]) for j in range(S + 1)]
         if point_tip:
             tip = index[('T', k)]
             span = len(loop) if closed else len(loop) - 1
             for j in range(span):
                 a, ua = loop[j]
                 b, ub = loop[(j + 1) % len(loop)]
-                g.add_face((a, b, tip), ((ua, vt), (ub, vt), (0.5, 1.0)))
+                g.add_face((a, b, tip), ((ua, vt), (ub, vt), (0.5, ts[nr - 1])))
         elif closed:
             g.add_face([a for a, _u in loop], [(u, vt) for _a, u in loop])
 
-    # notch walls: close the gap where two locks separate (closed only)
-    if closed and i_split >= 0:
-        i, i1 = i_split, i_split + 1
-        for k in range(1, K):
-            Fb = V('F', k - 1, i, S)
-            Bb = V('B', k - 1, i, S)
-            E1 = V('F', k - 1, i1, S)
-            E2 = V('F', k, i1, 0)
-            f = [Fb, E2, Bb, E1]
-            n = newell([g.verts[q] for q in f])
-            T = locks[k].frames[i][1] + locks[k - 1].frames[i][1]
-            if n.dot(T) < 0.0:
-                f.reverse()
-            u, v = 0.5, ts[i]
-            g.add_face(f, ((u, v), (u, ts[i1]), (u, v), (u, ts[i1])))
+    # walls where two joined locks separate (tip side) or merge (root side)
+    if closed:
+        for b in range(K - 1):
+            if r1[b] < 0:
+                continue
+            T = locks[b].frames[r1[b]][1] + locks[b + 1].frames[r1[b]][1]
+            for i, i1, sgn in ((r1[b], r1[b] + 1, 1.0), (r0[b], r0[b] - 1, -1.0)):
+                if i1 < 0:
+                    continue
+                Fb, Bb = V('F', b, i, S), V('B', b, i, S)
+                E1, E2 = V('F', b, i1, S), V('F', b + 1, i1, 0)
+                f = [Fb, E2, Bb, E1]
+                n = newell([g.verts[q] for q in f])
+                if n.dot(T) * sgn < 0.0:
+                    f.reverse()
+                v0, v1 = locks[b].ts[i], locks[b].ts[i1]
+                g.add_face(f, ((0.5, v0), (0.5, v1), (0.5, v0), (0.5, v1)))
 
-    # optional root cap (closed)
     if closed and prm.root_cap:
-        front, back = [], []
-        for k, lk in enumerate(locks):
-            for c in range(S + 1):
-                for side, lst in (('F', front), ('B', back)):
-                    vi = V(side, k, 0, c)
-                    if not lst or lst[-1] != vi:
-                        lst.append(vi)
-        ring = front + [b for b in reversed(back) if b not in (front[0], front[-1])]
-        n = newell([g.verts[q] for q in ring])
-        T0 = sum((lk.frames[0][1] for lk in locks), Vector())
-        if n.dot(T0) > 0.0:
-            ring.reverse()
-        g.add_face(ring, [(0.5, 0.0)] * len(ring))
+        # one cap per run of locks that are joined at the root row
+        start = 0
+        for k in range(K):
+            if k < K - 1 and right_shared(k, 0):
+                continue
+            front, back = [], []
+            for kk in range(start, k + 1):
+                for c in range(S + 1):
+                    for side, lst in (('F', front), ('B', back)):
+                        vi = V(side, kk, 0, c)
+                        if not lst or lst[-1] != vi:
+                            lst.append(vi)
+            ring = front + [q for q in reversed(back) if q not in (front[0], front[-1])]
+            n = newell([g.verts[q] for q in ring])
+            T0 = sum((locks[kk].frames[0][1] for kk in range(start, k + 1)), Vector())
+            if n.dot(T0) > 0.0:
+                ring.reverse()
+            g.add_face(ring, [(0.5, 0.0)] * len(ring))
+            start = k + 1
 
-    # ---- custom normals -------------------------------------------------------
+    # ---- normals ---------------------------------------------------------------
     raw = g.vertex_normals()
     geo_n = []
     normals = []
@@ -708,18 +893,28 @@ def build_hull(g, vn, prm, closed):
 
 def build_group(spline_samples, center, prm, mirror=False, with_outline=True):
     """spline_samples: list of sample lists -> (hair Geo, outline Geo|None)."""
-    locks = []
+    import random
+    units = []
     for n, s in enumerate(spline_samples):
-        lk = make_lock(s, center, prm, False, n)
-        if lk:
-            locks.append(lk)
+        u = make_unit(s, center, prm, False, float(n), random.Random(prm.seed * 7919 + n * 2))
+        if u:
+            units.append(u)
         if mirror:
             ms = [(center.mirror(p), r, t) for p, r, t in s]
-            lk = make_lock(ms, center, prm, True, n + 0.5)
-            if lk:
-                locks.append(lk)
+            u = make_unit(ms, center, prm, True, n + 0.5, random.Random(prm.seed * 7919 + n * 2))
+            if u:
+                units.append(u)
     hair = Geo()
     outline = Geo() if (with_outline and prm.outline) else None
-    for sheet in cluster_locks(locks, prm):
-        build_sheet(sheet, center, prm, hair, outline)
+    for run in cluster_units(units, prm):
+        locks, rows = [], []
+        for u in run:
+            if locks:
+                rc = len(u.locks[0].frames) - (1 if prm.tip_mode == 'POINT' else 0)
+                rows.append(_lateral_row(locks[-1], u.locks[0], prm.split, rc))
+            for j, lk in enumerate(u.locks):
+                if j > 0:
+                    rows.append(u.branch_row)
+                locks.append(lk)
+        build_sheet(locks, rows, center, prm, hair, outline)
     return hair, outline

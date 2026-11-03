@@ -44,10 +44,16 @@ def analyse(ob, st, tag):
     ngons = sum(1 for s in sizes if s > 4)
     check(ngons == 0, f"{tag}: {ngons} n-gons")
     # triangles only at tips
+    # (a tip vertex is one whose faces are all triangles: the apex of a tip fan)
+    vsizes = {}
+    for p in me.polygons:
+        for v in p.vertices:
+            vsizes.setdefault(v, set()).add(len(p.vertices))
     for p in me.polygons:
         if len(p.vertices) == 3:
-            check(max(t_attr[v].value for v in p.vertices) > 0.999, f"{tag}: triangle away from tip")
-            break
+            if not any(vsizes[v] == {3} for v in p.vertices):
+                check(False, f"{tag}: triangle away from tip")
+                break
     # no degenerate faces
     small = sum(1 for p in me.polygons if p.area < 1e-12)
     check(small == 0, f"{tag}: {small} degenerate faces")
@@ -71,7 +77,7 @@ def analyse(ob, st, tag):
         total += 1
         good += n.dot(center.radial(c)) > -0.2
     check(total == 0 or good / total > 0.97, f"{tag}: only {good}/{total} outer faces face outward")
-    check(me.has_custom_normals, f"{tag}: no custom normals")
+    check(me.has_custom_normals == (st.normal_mode == 'VOLUME'), f"{tag}: custom normal state wrong")
     if st.outline:
         om = st.outline_object.data
         check(len(om.polygons) > 0, f"{tag}: empty outline")
@@ -88,15 +94,18 @@ def main():
     rows = []
     for ob in groups:
         st = ob.toon_hair
-        for connect, bf, lod, prof, tip in itertools.product(
+        st.outline = True
+        for connect, bf, lod, prof, tip, br in itertools.product(
                 (False, True), ('CLOSED', 'FLIPPED', 'SINGLE'), ('LOW', 'MID', 'HIGH'),
-                ('LENS', 'RIDGE', 'ROUND', 'FLAT'), ('POINT', 'BLUNT')):
+                ('LENS', 'RIDGE', 'ROUND'), ('POINT', 'BLUNT'), (1, 3)):
             th._suspend_update = True
             st.connect, st.backface, st.lod, st.profile, st.tip_mode = connect, bf, lod, prof, tip
+            st.branches = br
+            st.normal_mode = 'NONE' if lod == 'HIGH' else 'VOLUME'
             th._suspend_update = False
             st.length_segments, st.profile_segments = th.LOD_TABLE[lod]
             build.rebuild(ob)
-            tag = f"{ob.name}/{'conn' if connect else 'indep'}/{bf}/{lod}/{prof}/{tip}"
+            tag = f"{ob.name}/{'conn' if connect else 'indep'}/{bf}/{lod}/{prof}/{tip}/br{br}"
             if tip == 'BLUNT':
                 # blunt closed tips use one cap n-gon per lock by design
                 me = st.hair_object.data
@@ -110,6 +119,7 @@ def main():
         # restore defaults
         th._suspend_update = True
         st.backface, st.lod, st.profile, st.tip_mode = 'CLOSED', 'MID', 'LENS', 'POINT'
+        st.normal_mode = 'VOLUME'
         th._suspend_update = False
     for r in rows:
         if "/MID/" in r[0]:

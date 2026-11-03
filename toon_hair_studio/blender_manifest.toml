@@ -3,7 +3,7 @@ schema_version = "1.0.0"
 id = "toon_hair_studio"
 version = "1.0.0"
 name = "Toon Hair Studio"
-tagline = "Clean-topology stylized anime hair for VTuber models"
+tagline = "Clean-topology anime hair meshes for VRM and VRChat"
 maintainer = "lionjazz15-cpu"
 type = "add-on"
 
