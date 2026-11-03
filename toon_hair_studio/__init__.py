@@ -1,0 +1,725 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Toon Hair Studio - clean-topology stylized anime hair for VTuber models.
+
+Draw / edit Bezier guide curves; every spline becomes a quad-only strand
+(pointed triangle tip) with:
+  * Low / Mid / High poly presets
+  * backface mode: single sheet / flipped back polygons / closed volume
+  * head-volume custom normals for clean anime shading
+  * generated inverted-hull outline with tapered tips
+  * EEVEE toon material with inner-side colour and an angel ring
+"""
+
+bl_info = {
+    "name": "Toon Hair Studio",
+    "author": "lionjazz15-cpu",
+    "version": (1, 0, 0),
+    "blender": (4, 2, 0),
+    "location": "3D View > Sidebar > ToonHair",
+    "description": "Clean-topology stylized anime hair (VTuber) with toon shading & outlines",
+    "category": "Mesh",
+}
+
+import math
+
+import bpy
+from bpy.app.handlers import persistent
+from bpy.props import (BoolProperty, EnumProperty, FloatProperty, IntProperty,
+                       PointerProperty)
+from mathutils import Vector
+
+from . import build, core, materials
+
+# ==========================================================================
+# Properties
+# ==========================================================================
+
+_suspend_update = False
+
+
+def _upd(self, context):
+    if _suspend_update or not self.auto_update:
+        return
+    ob = self.id_data
+    if build.is_group(ob):
+        build.rebuild(ob)
+
+
+LOD_TABLE = {
+    'LOW': (6, 2),
+    'MID': (12, 4),
+    'HIGH': (20, 6),
+}
+
+
+def _upd_lod(self, context):
+    global _suspend_update
+    if self.lod in LOD_TABLE:
+        _suspend_update = True
+        try:
+            self.length_segments, self.profile_segments = LOD_TABLE[self.lod]
+        finally:
+            _suspend_update = False
+    _upd(self, context)
+
+
+def _is_empty_or_mesh(self, ob):
+    return ob.type in {'EMPTY', 'MESH'}
+
+
+def _is_mesh(self, ob):
+    return ob.type == 'MESH'
+
+
+class ToonHairSettings(bpy.types.PropertyGroup):
+    enabled: BoolProperty(default=False)
+    auto_update: BoolProperty(name="自動更新 Live", default=True,
+                              description="カーブを編集したら即メッシュを再生成")
+    hair_object: PointerProperty(type=bpy.types.Object)
+    outline_object: PointerProperty(type=bpy.types.Object)
+    center: PointerProperty(name="頭の中心 Head", type=bpy.types.Object, poll=_is_empty_or_mesh,
+                            update=_upd,
+                            description="頭の中心(スケールで楕円体)。毛束の向きと球状法線の基準")
+    material: PointerProperty(name="髪マテリアル", type=bpy.types.Material, update=_upd)
+    outline_material: PointerProperty(name="線マテリアル", type=bpy.types.Material, update=_upd)
+
+    # --- topology ---
+    lod: EnumProperty(
+        name="ポリ数 LOD",
+        items=[('LOW', "Low", "長さ6 × 断面2 (超ローポリ)"),
+               ('MID', "Mid", "長さ12 × 断面4 (ミドルポリ)"),
+               ('HIGH', "High", "長さ20 × 断面6"),
+               ('CUSTOM', "Custom", "手動")],
+        default='MID', update=_upd_lod)
+    length_segments: IntProperty(name="長さ分割", default=12, min=2, max=64, update=_upd)
+    profile_segments: IntProperty(name="断面分割", default=4, min=1, max=16, update=_upd)
+    tip_bias: FloatProperty(name="毛先に分割を寄せる", default=0.3, min=0.0, max=0.6, update=_upd)
+
+    # --- cross section ---
+    profile: EnumProperty(
+        name="断面",
+        items=[('LENS', "レンズ", "両端が鋭い。アニメ髪の定番"),
+               ('RIDGE', "山形", "中央に稜線。シャープな影とハイライト"),
+               ('ROUND', "丸", "ふっくら"),
+               ('FLAT', "板", "ほぼ均一の厚み")],
+        default='LENS', update=_upd)
+    backface: EnumProperty(
+        name="裏面",
+        items=[('CLOSED', "厚みあり", "閉じた立体。カリングON・アウトラインが最も安定"),
+               ('FLIPPED', "裏面ポリ", "片面+反転コピー。Unity/MToonのCull Backでも裏が見える"),
+               ('SINGLE', "なし(片面)", "最軽量。両面表示マテリアルで表示")],
+        default='CLOSED', update=_upd)
+    width: FloatProperty(name="幅", default=0.03, min=0.0001, soft_max=0.2, subtype='DISTANCE',
+                         unit='LENGTH', update=_upd)
+    thickness: FloatProperty(name="厚み", default=0.25, min=0.0, soft_max=1.0, update=_upd,
+                             description="幅に対する厚みの比率 (厚みありのみ)")
+    curvature: FloatProperty(name="反り", default=0.12, soft_min=-0.5, soft_max=0.5, update=_upd,
+                             description="断面のアーチ量 (幅比)")
+    flip_offset: FloatProperty(name="裏面オフセット", default=0.0003, min=0.0, soft_max=0.005,
+                               subtype='DISTANCE', unit='LENGTH', update=_upd)
+
+    # --- silhouette ---
+    root_ratio: FloatProperty(name="根元の幅", default=0.7, min=0.0, soft_max=2.0, update=_upd)
+    bulge_pos: FloatProperty(name="膨らみ位置", default=0.25, min=0.0, max=0.95, update=_upd)
+    tip_shape: FloatProperty(name="毛先の形", default=1.4, min=0.2, max=5.0, update=_upd,
+                             description="<1 鋭く尖る / 1 直線 / >1 ふっくらしてから尖る")
+    tip_mode: EnumProperty(
+        name="毛先",
+        items=[('POINT', "尖り", "1頂点に収束 (三角形は毛先のみ)"),
+               ('BLUNT', "平ら", "全て四角形・切りっぱなし")],
+        default='POINT', update=_upd)
+    tip_min: FloatProperty(name="毛先の最小幅", default=0.12, min=0.0, max=1.0, update=_upd)
+    root_cap: BoolProperty(name="根元を閉じる", default=False, update=_upd)
+    twist: FloatProperty(name="ねじれ", default=0.0, subtype='ANGLE', soft_min=-math.pi * 2,
+                         soft_max=math.pi * 2, update=_upd)
+    root_extend: FloatProperty(name="根元を埋める", default=0.0, min=0.0, soft_max=0.05,
+                               subtype='DISTANCE', unit='LENGTH', update=_upd)
+    mirror_x: BoolProperty(name="X ミラー", default=False, update=_upd,
+                           description="頭の中心のX軸で左右対称に生成")
+
+    # --- shading ---
+    normal_mode: EnumProperty(
+        name="法線",
+        items=[('VOLUME', "頭の球体", "頭の楕円体方向へ法線をブレンド(アニメ影の定番)"),
+               ('SMOOTH', "スムーズ", "形状そのままのスムーズ法線"),
+               ('PROXY', "プロキシ転写", "指定メッシュからData Transferで法線転写")],
+        default='VOLUME', update=_upd)
+    normal_blend: FloatProperty(name="ブレンド", default=0.6, min=0.0, max=1.0, update=_upd)
+    normal_proxy: PointerProperty(name="プロキシ", type=bpy.types.Object, poll=_is_mesh, update=_upd)
+
+    # --- outline ---
+    outline: BoolProperty(name="アウトライン", default=True, update=_upd)
+    outline_width: FloatProperty(name="線の太さ", default=0.0012, min=0.0, soft_max=0.01,
+                                 subtype='DISTANCE', unit='LENGTH', update=_upd)
+    outline_tip_ratio: FloatProperty(name="毛先の線の細さ", default=0.15, min=0.0, max=1.0,
+                                     update=_upd)
+    outline_taper_start: FloatProperty(name="細くなり始め", default=0.5, min=0.0, max=1.0,
+                                       update=_upd)
+
+
+# ==========================================================================
+# Helpers
+# ==========================================================================
+
+CENTER_NAME = "TH_HeadCenter"
+
+
+def _find_center(context):
+    ob = bpy.data.objects.get(CENTER_NAME)
+    if ob is not None:
+        return ob
+    for o in bpy.data.objects:
+        if build.is_group(o) and o.toon_hair.center is not None:
+            return o.toon_hair.center
+    return None
+
+
+def _create_center(context, location=None, radius=0.1):
+    ob = bpy.data.objects.new(CENTER_NAME, None)
+    ob.empty_display_type = 'SPHERE'
+    ob.empty_display_size = 1.0
+    ob.scale = (radius, radius, radius)
+    ob.location = location if location is not None else context.scene.cursor.location
+    context.scene.collection.objects.link(ob)
+    return ob
+
+
+def _head_radius(center):
+    if center is None:
+        return 0.1
+    return max(center.matrix_world.to_scale())
+
+
+def _new_group(context, name, center, spline_points=None, **settings):
+    cu = bpy.data.curves.new(name, 'CURVE')
+    cu.dimensions = '3D'
+    ob = bpy.data.objects.new(name, cu)
+    context.collection.objects.link(ob)
+    ob.show_in_front = True
+    st = ob.toon_hair
+    global _suspend_update
+    _suspend_update = True
+    try:
+        st.enabled = True
+        st.center = center
+        st.material = materials.ensure_hair_material()
+        st.outline_material = materials.ensure_outline_material()
+        for k, v in settings.items():
+            setattr(st, k, v)
+    finally:
+        _suspend_update = False
+    for pts in (spline_points or []):
+        _add_bezier(cu, [ob.matrix_world.inverted() @ p for p in pts])
+    return ob
+
+
+def _add_bezier(cu, points):
+    sp = cu.splines.new('BEZIER')
+    sp.bezier_points.add(len(points) - 1)
+    for bp, co in zip(sp.bezier_points, points):
+        bp.co = co
+        bp.handle_left_type = 'AUTO'
+        bp.handle_right_type = 'AUTO'
+    return sp
+
+
+def _head_dir(az_deg, el_deg):
+    az, el = math.radians(az_deg), math.radians(el_deg)
+    return Vector((math.sin(az) * math.cos(el), -math.cos(az) * math.cos(el), math.sin(el)))
+
+
+def _strand_points(center, az, el0, el1, r0, r1, n=4, drop=0.0):
+    """Points hugging a head sphere from elevation el0 down to el1."""
+    c = center.matrix_world.to_translation()
+    R = _head_radius(center)
+    pts = []
+    for k in range(n):
+        f = k / (n - 1)
+        el = el0 + (el1 - el0) * f
+        r = (r0 + (r1 - r0) * f) * R
+        p = c + _head_dir(az, el) * r
+        p.z -= drop * R * f * f
+        pts.append(p)
+    return pts
+
+
+def active_group(context):
+    return build.owner_group(context.active_object)
+
+
+# ==========================================================================
+# Operators
+# ==========================================================================
+
+class TOONHAIR_OT_create_center(bpy.types.Operator):
+    bl_idname = "toon_hair.create_center"
+    bl_label = "頭の中心を作成"
+    bl_description = "3Dカーソル位置に頭の中心(楕円体)を作成。頭に合わせて移動/スケールしてください"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    radius: FloatProperty(name="頭の半径", default=0.1, min=0.001, subtype='DISTANCE', unit='LENGTH')
+
+    def execute(self, context):
+        ob = _create_center(context, radius=self.radius)
+        g = active_group(context)
+        if g is not None:
+            g.toon_hair.center = ob
+        return {'FINISHED'}
+
+
+class TOONHAIR_OT_add_group(bpy.types.Operator):
+    bl_idname = "toon_hair.add_group"
+    bl_label = "毛束グループを追加"
+    bl_description = "新しいガイドカーブ(毛束グループ)を作成。1スプライン=1毛束"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    name: bpy.props.StringProperty(name="名前", default="Hair_Group")
+
+    def execute(self, context):
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        center = _find_center(context) or _create_center(context)
+        R = _head_radius(center)
+        pts = _strand_points(center, 0.0, 55.0, 5.0, 1.0, 1.15)
+        ob = _new_group(context, self.name, center, [pts], width=R * 0.35,
+                        outline_width=R * 0.012, flip_offset=R * 0.003)
+        for o in context.selected_objects:
+            o.select_set(False)
+        ob.select_set(True)
+        context.view_layer.objects.active = ob
+        build.rebuild(ob)
+        return {'FINISHED'}
+
+
+class TOONHAIR_OT_convert_curve(bpy.types.Operator):
+    bl_idname = "toon_hair.convert_curve"
+    bl_label = "選択カーブを毛束に"
+    bl_description = "選択中のカーブを毛束グループにする (ベベルは無効化)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return any(o.type == 'CURVE' for o in context.selected_objects)
+
+    def execute(self, context):
+        center = _find_center(context) or _create_center(context)
+        R = _head_radius(center)
+        for ob in context.selected_objects:
+            if ob.type != 'CURVE' or ob.toon_hair.enabled:
+                continue
+            ob.data.bevel_depth = 0.0
+            ob.data.bevel_mode = 'ROUND'
+            ob.data.extrude = 0.0
+            ob.data.dimensions = '3D'
+            st = ob.toon_hair
+            global _suspend_update
+            _suspend_update = True
+            try:
+                st.enabled = True
+                st.center = center
+                st.width = R * 0.35
+                st.outline_width = R * 0.012
+                st.flip_offset = R * 0.003
+                st.material = materials.ensure_hair_material()
+                st.outline_material = materials.ensure_outline_material()
+            finally:
+                _suspend_update = False
+            ob.show_in_front = True
+            build.rebuild(ob)
+        return {'FINISHED'}
+
+
+class TOONHAIR_OT_add_strand(bpy.types.Operator):
+    bl_idname = "toon_hair.add_strand"
+    bl_label = "3Dカーソルに毛束を追加"
+    bl_description = "アクティブグループに、3Dカーソル位置を根元にした毛束を1本追加"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    length: FloatProperty(name="長さ(頭半径比)", default=1.6, min=0.1, soft_max=8.0)
+    hang: FloatProperty(name="垂れ", default=0.6, min=0.0, max=1.0)
+
+    @classmethod
+    def poll(cls, context):
+        return active_group(context) is not None
+
+    def execute(self, context):
+        g = active_group(context)
+        center = g.toon_hair.center
+        root = context.scene.cursor.location.copy()
+        R = _head_radius(center)
+        c = center.matrix_world.to_translation() if center else Vector()
+        out = root - c
+        out = out.normalized() if out.length > 1e-6 else Vector((0, -1, 0))
+        down = Vector((0, 0, -1))
+        L = self.length * R
+        pts = []
+        for k in range(4):
+            f = k / 3
+            d = out.lerp(down, min(1.0, self.hang * (0.4 + f))).normalized()
+            p = root + out * (0.15 * R * math.sin(f * math.pi)) + d * (L * f)
+            pts.append(p)
+        inv = g.matrix_world.inverted()
+        was_edit = context.mode == 'EDIT_CURVE' and context.active_object == g
+        if was_edit:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        _add_bezier(g.data, [inv @ p for p in pts])
+        if was_edit:
+            bpy.ops.object.mode_set(mode='EDIT')
+        build.rebuild(g)
+        return {'FINISHED'}
+
+
+class TOONHAIR_OT_sample(bpy.types.Operator):
+    bl_idname = "toon_hair.sample_hairstyle"
+    bl_label = "サンプル髪型を生成"
+    bl_description = "頭の中心の周りに 前髪/横髪/後ろ髪/アホ毛 のサンプルを生成"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        center = _find_center(context) or _create_center(context)
+        R = _head_radius(center)
+        common = dict(outline_width=R * 0.012, flip_offset=R * 0.003)
+
+        bangs = []
+        for i in range(9):
+            az = -48 + i * 12
+            ln = 1.0 - abs(az) / 160.0
+            bangs.append(_strand_points(center, az, 62, 62 - 62 * ln, 1.0, 1.12 + 0.05 * ln))
+        _new_group(context, "Hair_Bangs", center, bangs, width=R * 0.36, root_ratio=0.9,
+                   bulge_pos=0.3, tip_shape=1.3, **common)
+
+        sides = [_strand_points(center, 72, 45, -70, 1.02, 1.2, n=5, drop=1.2),
+                 _strand_points(center, 88, 40, -80, 1.04, 1.18, n=5, drop=1.6)]
+        _new_group(context, "Hair_Side", center, sides, width=R * 0.42, mirror_x=True,
+                   root_ratio=0.8, bulge_pos=0.35, tip_shape=1.6, **common)
+
+        back = []
+        for i in range(10):
+            az = 105 + i * 16.7
+            back.append(_strand_points(center, az, 70, -60, 1.02, 1.22, n=5, drop=2.2))
+        _new_group(context, "Hair_Back", center, back, width=R * 0.55, root_ratio=0.85,
+                   bulge_pos=0.4, tip_shape=1.8, thickness=0.3, **common)
+
+        c = center.matrix_world.to_translation()
+        ahoge = [[c + _head_dir(10, 88) * R * 0.98,
+                  c + _head_dir(10, 80) * R * 1.35 + Vector((0, 0, R * 0.25)),
+                  c + _head_dir(-20, 70) * R * 1.45 + Vector((0, 0, R * 0.25))]]
+        _new_group(context, "Hair_Ahoge", center, ahoge, width=R * 0.16, root_ratio=0.6,
+                   bulge_pos=0.2, tip_shape=1.0, profile='RIDGE', **common)
+
+        build.rebuild_all()
+        return {'FINISHED'}
+
+
+class TOONHAIR_OT_rebuild(bpy.types.Operator):
+    bl_idname = "toon_hair.rebuild"
+    bl_label = "再生成"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    all: BoolProperty(name="全グループ", default=False)
+
+    def execute(self, context):
+        if self.all:
+            build.rebuild_all()
+        else:
+            g = active_group(context)
+            if g is None:
+                self.report({'WARNING'}, "毛束グループが選択されていません")
+                return {'CANCELLED'}
+            build.rebuild(g)
+        return {'FINISHED'}
+
+
+class TOONHAIR_OT_bake(bpy.types.Operator):
+    bl_idname = "toon_hair.bake"
+    bl_label = "書き出し用メッシュに統合"
+    bl_description = ("全(または選択)グループを1つの独立メッシュに統合。"
+                      "カスタム法線・UV・頂点グループ(TH_root_tip / TH_pin)付き。VRM/FBX書き出し用")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    selected_only: BoolProperty(name="選択グループのみ", default=False)
+    with_outline: BoolProperty(name="アウトラインも出力", default=False,
+                               description="MToon等のシェーダー側アウトラインを使うならOFF")
+    name: bpy.props.StringProperty(name="名前", default="Hair_Baked")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        if self.selected_only:
+            groups = list({build.owner_group(o) for o in context.selected_objects} - {None})
+        else:
+            groups = [o for o in bpy.data.objects if build.is_group(o)]
+        if not groups:
+            self.report({'WARNING'}, "毛束グループがありません")
+            return {'CANCELLED'}
+        ob, oob = build.bake(groups, self.name, self.with_outline, context.collection)
+        proxy_groups = [g for g in groups if g.toon_hair.normal_mode == 'PROXY'
+                        and g.toon_hair.normal_proxy is not None]
+        if proxy_groups:
+            build._sync_proxy_modifier(ob, proxy_groups[0].toon_hair)
+        for o in context.selected_objects:
+            o.select_set(False)
+        ob.select_set(True)
+        context.view_layer.objects.active = ob
+        self.report({'INFO'}, f"{ob.name}: {len(ob.data.vertices)} verts, {len(ob.data.polygons)} faces")
+        return {'FINISHED'}
+
+
+class TOONHAIR_OT_toon_view(bpy.types.Operator):
+    bl_idname = "toon_hair.toon_view"
+    bl_label = "トゥーン表示設定"
+    bl_description = "EEVEE + Standard色変換(AgXだと色がくすむため)に設定"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        sc = context.scene
+        for eng in ('BLENDER_EEVEE_NEXT', 'BLENDER_EEVEE'):
+            try:
+                sc.render.engine = eng
+                break
+            except TypeError:
+                continue
+        try:
+            sc.view_settings.view_transform = 'Standard'
+            sc.view_settings.look = 'None'
+        except TypeError:
+            pass
+        for area in context.screen.areas if context.screen else []:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        space.shading.type = 'MATERIAL'
+        return {'FINISHED'}
+
+
+class TOONHAIR_OT_reset_material(bpy.types.Operator):
+    bl_idname = "toon_hair.reset_material"
+    bl_label = "マテリアルを初期化"
+    bl_description = "髪/線マテリアルのノードを作り直す"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return active_group(context) is not None
+
+    def execute(self, context):
+        st = active_group(context).toon_hair
+        if st.material is not None:
+            materials.build_hair_material(st.material)
+        if st.outline_material is not None:
+            materials.build_outline_material(st.outline_material)
+        build.rebuild(active_group(context))
+        return {'FINISHED'}
+
+
+# ==========================================================================
+# UI
+# ==========================================================================
+
+class _Panel:
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "ToonHair"
+
+
+class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
+    bl_label = "Toon Hair Studio"
+
+    def draw(self, context):
+        lay = self.layout
+        col = lay.column(align=True)
+        col.operator("toon_hair.add_group", icon='OUTLINER_OB_CURVE')
+        col.operator("toon_hair.convert_curve", icon='CURVE_BEZCURVE')
+        col.operator("toon_hair.add_strand", icon='PLUS')
+        col.operator("toon_hair.sample_hairstyle", icon='OUTLINER_OB_HAIR')
+        col = lay.column(align=True)
+        row = col.row(align=True)
+        row.operator("toon_hair.rebuild", icon='FILE_REFRESH').all = False
+        row.operator("toon_hair.rebuild", text="全て", icon='FILE_REFRESH').all = True
+        col.operator("toon_hair.bake", icon='EXPORT')
+        col.operator("toon_hair.toon_view", icon='SHADING_RENDERED')
+        g = active_group(context)
+        if g is None:
+            lay.label(text="毛束グループを選択してください", icon='INFO')
+        else:
+            box = lay.box()
+            box.label(text=g.name, icon='CURVE_DATA')
+            st = g.toon_hair
+            box.prop(st, "auto_update")
+            row = box.row(align=True)
+            row.prop(st, "center")
+            if st.center is None:
+                row.operator("toon_hair.create_center", text="", icon='ADD')
+
+
+class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
+    bl_label = "形状 / トポロジー"
+    bl_parent_id = "TOONHAIR_PT_main"
+
+    @classmethod
+    def poll(cls, context):
+        return active_group(context) is not None
+
+    def draw(self, context):
+        st = active_group(context).toon_hair
+        lay = self.layout
+        lay.use_property_split = True
+        lay.use_property_decorate = False
+        lay.row().prop(st, "lod", expand=True)
+        col = lay.column(align=True)
+        col.enabled = st.lod == 'CUSTOM'
+        col.prop(st, "length_segments")
+        col.prop(st, "profile_segments")
+        lay.prop(st, "tip_bias")
+        lay.separator()
+        lay.prop(st, "backface")
+        lay.prop(st, "profile")
+        col = lay.column(align=True)
+        col.prop(st, "width")
+        sub = col.column(align=True)
+        sub.enabled = st.backface == 'CLOSED'
+        sub.prop(st, "thickness")
+        col.prop(st, "curvature")
+        if st.backface == 'FLIPPED':
+            lay.prop(st, "flip_offset")
+        lay.separator()
+        col = lay.column(align=True)
+        col.prop(st, "root_ratio")
+        col.prop(st, "bulge_pos")
+        col.prop(st, "tip_shape")
+        lay.prop(st, "tip_mode")
+        if st.tip_mode == 'BLUNT':
+            lay.prop(st, "tip_min")
+        col = lay.column(align=True)
+        col.prop(st, "twist")
+        col.prop(st, "root_extend")
+        if st.backface == 'CLOSED':
+            lay.prop(st, "root_cap")
+        lay.prop(st, "mirror_x")
+        lay.label(text="ヒント: 編集モードで Alt+S=部分的な幅, Ctrl+T=ねじり", icon='INFO')
+
+
+class TOONHAIR_PT_shading(_Panel, bpy.types.Panel):
+    bl_label = "シェーディング"
+    bl_parent_id = "TOONHAIR_PT_main"
+
+    @classmethod
+    def poll(cls, context):
+        return active_group(context) is not None
+
+    def draw(self, context):
+        st = active_group(context).toon_hair
+        lay = self.layout
+        lay.use_property_split = True
+        lay.use_property_decorate = False
+        lay.prop(st, "normal_mode")
+        if st.normal_mode != 'SMOOTH':
+            lay.prop(st, "normal_blend")
+        if st.normal_mode == 'PROXY':
+            lay.prop(st, "normal_proxy")
+        lay.separator()
+        lay.prop(st, "material")
+        materials.draw_material_controls(lay, st.material)
+        lay.operator("toon_hair.reset_material", icon='NODE_MATERIAL')
+
+
+class TOONHAIR_PT_outline(_Panel, bpy.types.Panel):
+    bl_label = "アウトライン"
+    bl_parent_id = "TOONHAIR_PT_main"
+
+    @classmethod
+    def poll(cls, context):
+        return active_group(context) is not None
+
+    def draw_header(self, context):
+        self.layout.prop(active_group(context).toon_hair, "outline", text="")
+
+    def draw(self, context):
+        st = active_group(context).toon_hair
+        lay = self.layout
+        lay.use_property_split = True
+        lay.use_property_decorate = False
+        lay.active = st.outline
+        lay.prop(st, "outline_width")
+        lay.prop(st, "outline_tip_ratio")
+        lay.prop(st, "outline_taper_start")
+        lay.prop(st, "outline_material")
+        materials.draw_outline_controls(lay, st.outline_material)
+
+
+# ==========================================================================
+# Live update
+# ==========================================================================
+
+@persistent
+def _on_depsgraph(scene, depsgraph):
+    if build._building or _suspend_update:
+        return
+    dirty = set()
+    centers = set()
+    for u in depsgraph.updates:
+        idb = u.id
+        if isinstance(idb, bpy.types.Object):
+            ob = idb.original
+            if build.is_group(ob):
+                if (u.is_updated_geometry or u.is_updated_transform) and ob.toon_hair.auto_update:
+                    dirty.add(ob.name)
+            elif u.is_updated_transform:
+                centers.add(ob.name)
+    if centers:
+        for ob in bpy.data.objects:
+            if (build.is_group(ob) and ob.toon_hair.auto_update and ob.toon_hair.center is not None
+                    and ob.toon_hair.center.name in centers):
+                dirty.add(ob.name)
+    for name in dirty:
+        ob = bpy.data.objects.get(name)
+        if ob is not None:
+            try:
+                build.rebuild(ob)
+            except Exception as ex:  # never break the depsgraph loop
+                print("[ToonHair] rebuild failed:", ex)
+
+
+# ==========================================================================
+# Registration
+# ==========================================================================
+
+classes = (
+    ToonHairSettings,
+    TOONHAIR_OT_create_center,
+    TOONHAIR_OT_add_group,
+    TOONHAIR_OT_convert_curve,
+    TOONHAIR_OT_add_strand,
+    TOONHAIR_OT_sample,
+    TOONHAIR_OT_rebuild,
+    TOONHAIR_OT_bake,
+    TOONHAIR_OT_toon_view,
+    TOONHAIR_OT_reset_material,
+    TOONHAIR_PT_main,
+    TOONHAIR_PT_shape,
+    TOONHAIR_PT_shading,
+    TOONHAIR_PT_outline,
+)
+
+
+def register():
+    for c in classes:
+        bpy.utils.register_class(c)
+    bpy.types.Object.toon_hair = PointerProperty(type=ToonHairSettings)
+    bpy.types.Object.toon_hair_owner = PointerProperty(type=bpy.types.Object)
+    if _on_depsgraph not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph)
+
+
+def unregister():
+    if _on_depsgraph in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph)
+    del bpy.types.Object.toon_hair_owner
+    del bpy.types.Object.toon_hair
+    for c in reversed(classes):
+        bpy.utils.unregister_class(c)
