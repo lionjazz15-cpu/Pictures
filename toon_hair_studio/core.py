@@ -350,6 +350,15 @@ class StrandParams:
     order = 'AZIMUTH'         # AZIMUTH / CURVE
     connect_style = 'SMOOTH'  # SMOOTH (なめらか) / GROOVE (毛束の溝)
     smooth_iterations = 4
+    bevel = 0.3               # closed edges: side band height (fraction of thickness), 0 = knife edge
+    # loop density (HairHarpy-style equidistribution)
+    bend_density = 0.5
+    # curl / wave
+    curl_turns = 0.0
+    curl_radius = 0.5
+    curl_start = 0.3
+    wave_amp = 0.0
+    wave_freq = 2.0
     # branching (分岐毛)
     branches = 1
     branch_jitter = 0
@@ -435,6 +444,94 @@ def _branch_count(prm, rng):
     return n
 
 
+# --------------------------------------------------------------------------
+# loop layout: equidistribution of a density along the guide
+# --------------------------------------------------------------------------
+
+def density_profile(samples_list, prm, M=64):
+    """Loop density f(t) on M+1 samples, shared by every guide of a group.
+
+    f = (1 + bend_density * bend) * (1 + 3 * tip_bias * tip_zone), where bend
+    is the turning angle per loop step (30 deg = 1), averaged over the
+    group's guides in relative t, so laterally joined guides keep aligned
+    rows while bends and tips get more loops."""
+    segs = max(2, prm.length_segments)
+    acc = [0.0] * (M + 1)
+    cnt = 0
+    for smp in samples_list:
+        lengths, total = _arc(smp)
+        if total < 1e-6:
+            continue
+        pts = [_eval_at(smp, lengths, total, i / M)[0] for i in range(M + 1)]
+        for i in range(1, M):
+            a = pts[i] - pts[i - 1]
+            b = pts[i + 1] - pts[i]
+            if a.length > EPS and b.length > EPS:
+                acc[i] += a.angle(b) * (M / segs) / (math.pi / 6.0)
+        cnt += 1
+    bend = [min(1.0, x / cnt) for x in acc] if cnt else acc
+    sm = []
+    for i in range(M + 1):
+        lo, hi = max(0, i - 3), min(M, i + 3)
+        sm.append(sum(bend[lo:hi + 1]) / (hi - lo + 1))
+    return [(1.0 + prm.bend_density * sm[i]) * (1.0 + 3.0 * prm.tip_bias * smoothstep(0.5, 1.0, i / M))
+            for i in range(M + 1)]
+
+
+def _layout(f, t0, t1, n, K=200):
+    """n+1 params from t0 to t1 with equal integral of the density f."""
+    M = len(f) - 1
+
+    def fv(t):
+        x = min(max(t, 0.0), 1.0) * M
+        i = min(int(x), M - 1)
+        a = x - i
+        return f[i] * (1.0 - a) + f[i + 1] * a
+    ts = [t0 + (t1 - t0) * k / K for k in range(K + 1)]
+    G = [0.0]
+    for k in range(1, K + 1):
+        G.append(G[-1] + 0.5 * (fv(ts[k - 1]) + fv(ts[k])) * (ts[k] - ts[k - 1]))
+    out = [t0]
+    j = 0
+    for m in range(1, n):
+        target = G[-1] * m / n
+        while j < K - 1 and G[j + 1] < target:
+            j += 1
+        d = G[j + 1] - G[j]
+        a = (target - G[j]) / d if d > EPS else 0.0
+        out.append(ts[j] + a * (ts[j + 1] - ts[j]))
+    out.append(t1)
+    return out
+
+
+def deform_samples(samples, center, prm, tilt_sign=1.0, n=160):
+    """Curl (helix around the guide) and wave (side-to-side) deformation.
+    Returns a dense polyline; rows are then spread along the deformed path."""
+    curl = prm.curl_turns > 0.0 and prm.curl_radius > 0.0
+    wave = prm.wave_amp > 0.0 and prm.wave_freq > 0.0
+    if not (curl or wave):
+        return samples
+    lengths, total = _arc(samples)
+    if total < 1e-6:
+        return samples
+    pts = [(*_eval_at(samples, lengths, total, i / n), i / n) for i in range(n + 1)]
+    frames = compute_frames(pts, center, twist=0.0, tilt_sign=tilt_sign)
+    W = prm.width
+    s0 = min(max(prm.curl_start, 0.0), 0.95)
+    out = []
+    for (p, rad, tilt, t), (_P, _T, N, B) in zip(pts, frames):
+        off = Vector((0.0, 0.0, 0.0))
+        if curl:
+            ramp = smoothstep(s0, min(1.0, s0 + 0.15), t)
+            ph = 2.0 * math.pi * prm.curl_turns * max(0.0, t - s0) / (1.0 - s0)
+            off += (N * math.cos(ph) + B * math.sin(ph)) * (prm.curl_radius * W * ramp)
+        if wave:
+            off += B * (prm.wave_amp * W * math.sin(2.0 * math.pi * prm.wave_freq * t)
+                        * smoothstep(0.0, 0.25, t))
+        out.append((p + off, rad, tilt))
+    return out
+
+
 def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None):
     import random
     rng = rng or random.Random(0)
@@ -443,14 +540,19 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None):
         d = p0 - samples[1][0]
         if d.length > EPS:
             samples = [(p0 + d.normalized() * prm.root_extend, r0, t0)] + list(samples)
+    tilt_sign = -1.0 if mirrored else 1.0
+    samples = deform_samples(samples, center, prm, tilt_sign)
     lengths, total = _arc(samples)
     if total < 1e-6:
         return None
     segs = max(2, prm.length_segments)
-    tilt_sign = -1.0 if mirrored else 1.0
+    if prm.curl_turns > 0.0 and prm.curl_radius > 0.0:
+        segs = max(segs, int(math.ceil(prm.curl_turns * 10.0)) + 4)   # enough rows per turn
     point_tip = prm.tip_mode == 'POINT'
     tip_min = 0.0 if point_tip else prm.tip_min
-    bias = 1.0 + max(0.0, prm.tip_bias)
+    dens = getattr(prm, "density_profile", None)
+    if not dens:
+        dens = density_profile([samples], prm)
     nb = _branch_count(prm, rng)
     if segs < 4:
         nb = 1
@@ -468,10 +570,11 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None):
 
     def row_ts(t_end):
         if not branchy:
-            return [1.0 - (1.0 - i / segs) ** bias for i in range(segs + 1)]
-        tl = [tb * i / n_pre for i in range(n_pre + 1)]
-        tl += [tb + (t_end - tb) * (1.0 - (1.0 - m / n_post) ** bias) for m in range(1, n_post + 1)]
-        return tl
+            return _layout(dens, 0.0, 1.0, segs)
+        pre = _layout(dens, 0.0, tb, n_pre)
+        post = _layout(dens, tb, 1.0, n_post)
+        k = (t_end - tb) / (1.0 - tb)
+        return pre + [tb + (x - tb) * k for x in post[1:]]
 
     # ---- single lock -------------------------------------------------------
     if nb == 1:
@@ -704,11 +807,16 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
     def is_shared_col(k, i, c):
         return (c == 0 and left_shared(k, i)) or (c == S and right_shared(k, i))
 
+    bevel = closed and prm.bevel > 1e-6
+
+    def closed_edge(k, i, c):
+        return closed and c in (0, S) and not is_shared_col(k, i, c)
+
     def key(side, k, i, c):
         if c == 0 and left_shared(k, i):
             return (side, i, k - 1, S)
-        if closed and c in (0, S) and not is_shared_col(k, i, c):
-            return ('E', i, k, c)
+        if not bevel and closed_edge(k, i, c):
+            return ('E', i, k, c)          # knife edge: front and back meet
         return (side, i, k, c)
 
     acc = {}
@@ -805,6 +913,9 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
                 wbv = bl + (br - bl) * (x + 1.0) * 0.5
                 ym = my_o + (my_u - my_o) * wbv
                 ye = he_o + (he_u - he_o) * wbv
+                if bevel and closed_edge(k, i, c):
+                    # bevel: the outer edge keeps a small side band
+                    ye = half_t * prm.bevel * wk[k]
                 if closed:
                     put(key('F', k, i, c), base + N * (ym + ye), t, 0.0, rw)
                     put(key('B', k, i, c), base + N * (ym - ye), t, 1.0, rw)
@@ -830,6 +941,7 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
     def V(side, k, i, c):
         return index[key(side, k, i, c)]
 
+    band_faces = []
     for k, lk in enumerate(locks):
         cols = list(range(S + 1)) if not lk.rev else list(range(S, -1, -1))
         us = [j / S for j in range(S + 1)]
@@ -844,11 +956,19 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
                 if closed:
                     g.add_face((V('B', k, i, cb), V('B', k, i, ca), V('B', k, i + 1, ca), V('B', k, i + 1, cb)),
                                ((ub, v0), (ua, v0), (ua, v1), (ub, v1)))
+            if bevel:
+                # bevel band along each outer (not joined) edge
+                for c, u in ((0, 0.0), (S, 1.0)):
+                    if closed_edge(k, i, c) and closed_edge(k, i + 1, c):
+                        f = [V('F', k, i, c), V('F', k, i + 1, c), V('B', k, i + 1, c), V('B', k, i, c)]
+                        band_faces.append(len(g.faces))
+                        g.add_face(f, [(u, v0), (u, v1), (u, v1), (u, v0)])
         i = rc - 1
         vt = ts[i]
         loop = [(V('F', k, i, cols[j]), us[j]) for j in range(S + 1)]
         if closed:
-            loop += [(V('B', k, i, cols[j]), us[j]) for j in range(S - 1, 0, -1)]
+            back = range(S, -1, -1) if bevel else range(S - 1, 0, -1)
+            loop += [(V('B', k, i, cols[j]), us[j]) for j in back]
         if point_tip:
             tip = index[('T', k)]
             span = len(loop) if closed else len(loop) - 1
@@ -860,6 +980,7 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
             g.add_face([a for a, _u in loop], [(u, vt) for _a, u in loop])
 
     # walls where two joined locks separate (tip side) or merge (root side)
+    wall_start = len(g.faces)
     if closed:
         for b in range(K - 1):
             if r1[b] < 0:
@@ -869,13 +990,21 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
                 if i1 < 0:
                     continue
                 Fb, Bb = V('F', b, i, S), V('B', b, i, S)
-                E1, E2 = V('F', b, i1, S), V('F', b + 1, i1, 0)
-                f = [Fb, E2, Bb, E1]
-                n = newell([g.verts[q] for q in f])
-                if n.dot(T) * sgn < 0.0:
-                    f.reverse()
                 v0, v1 = locks[b].ts[i], locks[b].ts[i1]
-                g.add_face(f, ((0.5, v0), (0.5, v1), (0.5, v0), (0.5, v1)))
+                if not bevel:
+                    E1, E2 = V('F', b, i1, S), V('F', b + 1, i1, 0)
+                    quads = [[Fb, E2, Bb, E1]]
+                else:
+                    # the two separated edges each have a front and a back
+                    # vertex: the hexagonal gap closes with two quads
+                    F1, B1 = V('F', b, i1, S), V('B', b, i1, S)
+                    F2, B2 = V('F', b + 1, i1, 0), V('B', b + 1, i1, 0)
+                    quads = [[Fb, F2, B2, Bb], [Fb, Bb, B1, F1]]
+                for f in quads:
+                    n = newell([g.verts[q] for q in f])
+                    if n.dot(T) * sgn < 0.0:
+                        f.reverse()
+                    g.add_face(f, ((0.5, v0), (0.5, v1), (0.5, v1), (0.5, v0)))
 
     if closed and prm.root_cap:
         # one cap per run of locks that are joined at the root row
@@ -897,6 +1026,8 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
                 ring.reverse()
             g.add_face(ring, [(0.5, 0.0)] * len(ring))
             start = k + 1
+
+    _orient_like_neighbours(g, band_faces + list(range(wall_start, len(g.faces))))
 
     # ---- smooth lateral joins: shrink-free Taubin relaxation -----------------
     if smooth_lat and prm.smooth_iterations > 0 and any(w > 0.0 for w in relax_w.values()):
@@ -936,6 +1067,45 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
             g.add_face([q + nv for q in reversed(f)], list(reversed(uv)))
 
     hair.extend(g)
+
+
+def _orient_like_neighbours(g, face_ids):
+    """Flip the given faces (walls, caps) so that every edge they share with
+    the rest of the mesh is walked in the opposite direction (consistent
+    winding), instead of guessing from the lock direction."""
+    face_ids = list(face_ids)
+    if not face_ids:
+        return
+    todo = set(face_ids)
+    directed = set()
+    for fi, f in enumerate(g.faces):
+        if fi in todo:
+            continue
+        for a in range(len(f)):
+            directed.add((f[a], f[(a + 1) % len(f)]))
+    for _ in range(len(face_ids) + 1):
+        progressed = False
+        for fi in sorted(todo):
+            f = g.faces[fi]
+            same = opp = 0
+            for a in range(len(f)):
+                e = (f[a], f[(a + 1) % len(f)])
+                if e in directed:
+                    same += 1
+                elif (e[1], e[0]) in directed:
+                    opp += 1
+            if same == 0 and opp == 0:
+                continue
+            if same > opp:
+                g.faces[fi] = tuple(reversed(f))
+                g.face_uv[fi] = tuple(reversed(g.face_uv[fi]))
+                f = g.faces[fi]
+            for a in range(len(f)):
+                directed.add((f[a], f[(a + 1) % len(f)]))
+            todo.discard(fi)
+            progressed = True
+        if not todo or not progressed:
+            break
 
 
 def _relax(g, weights, iterations, lam=0.5, mu=-0.53):
@@ -1040,6 +1210,7 @@ def build_hull(g, vn, prm, closed):
 def build_group(spline_samples, center, prm, mirror=False, with_outline=True):
     """spline_samples: list of sample lists -> (hair Geo, outline Geo|None)."""
     import random
+    prm.density_profile = density_profile(spline_samples, prm)
     units = []
     for n, s in enumerate(spline_samples):
         u = make_unit(s, center, prm, False, float(n), random.Random(prm.seed * 7919 + n * 2))

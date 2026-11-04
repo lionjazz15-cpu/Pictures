@@ -58,6 +58,15 @@ def analyse(ob, st, tag):
     small = sum(1 for p in me.polygons if p.area < 1e-12)
     check(small == 0, f"{tag}: {small} degenerate faces")
     use = edge_use(me)
+    # consistent winding: an edge shared by two faces is walked both ways
+    directed = {}
+    for p in me.polygons:
+        vs = list(p.vertices)
+        for a in range(len(vs)):
+            e = (vs[a], vs[(a + 1) % len(vs)])
+            directed[e] = directed.get(e, 0) + 1
+    flipped = sum(1 for e, n in directed.items() if n > 1)
+    check(flipped == 0, f"{tag}: {flipped} edges with inconsistent winding")
     over = sum(1 for c in use.values() if c > 2)
     check(over == 0, f"{tag}: {over} non-manifold edges (>2 faces)")
     if st.backface == 'CLOSED':
@@ -86,6 +95,60 @@ def analyse(ob, st, tag):
     return len(me.vertices), len(me.polygons), sizes.count(3)
 
 
+def test_new_features():
+    """Head setup, drawing helpers, presets (incl. curl) and bevel topology."""
+    from toon_hair_studio import draw, core, presets
+    # head + neck + shoulders mesh, like a real character
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.1, location=(0, 0, 1.5), segments=32, ring_count=16)
+    head = bpy.context.active_object
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.04, depth=0.2, location=(0, 0, 1.35))
+    neck = bpy.context.active_object
+    bpy.ops.mesh.primitive_cube_add(size=0.4, location=(0, 0, 1.1))
+    body = bpy.context.active_object
+    for o in (head, neck, body):
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = head
+    bpy.ops.object.join()
+    res = bpy.ops.toon_hair.setup_head()
+    check(res == {'FINISHED'}, "setup_head failed")
+    c = bpy.data.objects[draw.CENTER_NAME]
+    sx, sy, sz = c.scale
+    check(0.07 < sy < 0.13 and 0.07 < sz < 0.14, f"head fit radius off: {tuple(c.scale)}")
+    check(abs(c.location.z - 1.5) < 0.04, f"head fit centre off: {tuple(c.location)}")
+    check(bpy.context.scene.toon_hair_head == head, "head not stored")
+
+    # stroke -> anchors
+    stroke = [Vector((0, -0.1, 1.6 - i * 0.01)) for i in range(30)]
+    ctrl = draw.stroke_to_controls(stroke, max_points=8, min_points=3, spacing=0.035)
+    check(3 <= len(ctrl) <= 8 and (ctrl[0] - stroke[0]).length < 1e-6
+          and (ctrl[-1] - stroke[-1]).length < 1e-6, "stroke_to_controls wrong ends/count")
+
+    # every preset builds clean topology through the curve workflow
+    for key in presets.ORDER:
+        bpy.ops.object.mode_set(mode='OBJECT') if bpy.context.mode != 'OBJECT' else None
+        res = bpy.ops.toon_hair.add_group(preset=key, edit=False)
+        check(res == {'FINISHED'}, f"add_group {key} failed")
+        g = bpy.context.active_object
+        st = g.toon_hair
+        # add a second strand next to the first so connect / mirror kick in
+        sp = g.data.splines[0]
+        pts = [bp.co.copy() + Vector((0.03, 0, 0)) for bp in sp.bezier_points]
+        draw.add_bezier(g.data, pts)
+        build.rebuild(g)
+        analyse(g, st, f"preset/{key}")
+        if key == 'DRILL':
+            check(len(st.hair_object.data.vertices) > 300, "curl preset too coarse")
+
+    # density layout puts more loops at bends and tips
+    prm = core.StrandParams(length_segments=12, tip_bias=0.5, bend_density=1.0)
+    f = [1.0] * 65
+    lay = core._layout(f, 0.0, 1.0, 10)
+    check(abs(lay[5] - 0.5) < 1e-6, "uniform layout not uniform")
+    f = [1.0 + (3.0 if i > 48 else 0.0) for i in range(65)]
+    lay = core._layout(f, 0.0, 1.0, 10)
+    check(lay[-2] > 0.9 and (lay[1] - lay[0]) > (lay[-1] - lay[-2]), "density layout not denser at tip")
+
+
 def main():
     th.register()
     bpy.ops.toon_hair.sample_hairstyle()
@@ -101,6 +164,7 @@ def main():
             th._suspend_update = True
             st.connect, st.backface, st.lod, st.profile, st.tip_mode = connect, bf, lod, prof, tip
             st.branches = br
+            st.bevel = 0.0 if lod == 'LOW' else 0.3
             st.connect_style = 'GROOVE' if prof == 'RIDGE' else 'SMOOTH'
             st.normal_mode = 'NONE' if lod == 'HIGH' else 'VOLUME'
             th._suspend_update = False
@@ -125,6 +189,8 @@ def main():
     for r in rows:
         if "/MID/" in r[0]:
             print("%-40s verts %5d faces %5d tris %3d" % r)
+
+    test_new_features()
 
     # live update via depsgraph: move a control point
     ob = bpy.data.objects["Hair_Bangs"]

@@ -28,7 +28,8 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, IntProperty,
                        PointerProperty)
 from mathutils import Vector
 
-from . import build, core, materials
+from . import build, core, materials, presets
+from contextlib import contextmanager
 
 # ==========================================================================
 # Properties
@@ -52,14 +53,22 @@ LOD_TABLE = {
 }
 
 
-def _upd_lod(self, context):
+@contextmanager
+def _suspended():
+    """Change several settings without rebuilding after each one."""
     global _suspend_update
+    prev = _suspend_update
+    _suspend_update = True
+    try:
+        yield
+    finally:
+        _suspend_update = prev
+
+
+def _upd_lod(self, context):
     if self.lod in LOD_TABLE:
-        _suspend_update = True
-        try:
+        with _suspended():
             self.length_segments, self.profile_segments = LOD_TABLE[self.lod]
-        finally:
-            _suspend_update = False
     _upd(self, context)
 
 
@@ -93,7 +102,11 @@ class ToonHairSettings(bpy.types.PropertyGroup):
         default='MID', update=_upd_lod)
     length_segments: IntProperty(name="長さ分割", default=12, min=2, max=64, update=_upd)
     profile_segments: IntProperty(name="断面分割", default=4, min=1, max=16, update=_upd)
-    tip_bias: FloatProperty(name="毛先に分割を寄せる", default=0.3, min=0.0, max=0.6, update=_upd)
+    tip_bias: FloatProperty(name="毛先に分割を寄せる", default=0.3, min=0.0, max=1.0, update=_upd)
+    bend_density: FloatProperty(name="曲がりに分割を寄せる", default=0.5, min=0.0, max=3.0, update=_upd,
+                                description="カーブが曲がっている所ほどループを細かくする (グループ内で共通なので連結しても行がそろう)")
+    bevel: FloatProperty(name="ベベル", default=0.3, min=0.0, max=0.9, update=_upd,
+                         description="厚みありの時、表と裏の間の縁に細い側面の帯を1本入れる (厚みに対する比率)。0でナイフエッジ")
 
     # --- cross section ---
     profile: EnumProperty(
@@ -132,6 +145,14 @@ class ToonHairSettings(bpy.types.PropertyGroup):
     root_cap: BoolProperty(name="根元を閉じる", default=False, update=_upd)
     twist: FloatProperty(name="ねじれ", default=0.0, subtype='ANGLE', soft_min=-math.pi * 2,
                          soft_max=math.pi * 2, update=_upd)
+    curl_turns: FloatProperty(name="カール回数", default=0.0, min=0.0, soft_max=8.0, update=_upd,
+                              description="縦ロールのように房をらせん状に巻く回数")
+    curl_radius: FloatProperty(name="カール半径", default=0.5, min=0.0, soft_max=2.0, update=_upd,
+                               description="らせんの半径 (幅比)")
+    curl_start: FloatProperty(name="カール開始", default=0.3, min=0.0, max=0.95, update=_upd)
+    wave_amp: FloatProperty(name="うねり", default=0.0, min=0.0, soft_max=1.5, update=_upd,
+                            description="左右にうねらせる量 (幅比)")
+    wave_freq: FloatProperty(name="うねり回数", default=2.0, min=0.1, soft_max=8.0, update=_upd)
     root_extend: FloatProperty(name="根元を埋める", default=0.0, min=0.0, soft_max=0.05,
                                subtype='DISTANCE', unit='LENGTH', update=_upd)
     mirror_x: BoolProperty(name="X ミラー", default=False, update=_upd,
@@ -242,17 +263,13 @@ def _new_group(context, name, center, spline_points=None, **settings):
     context.collection.objects.link(ob)
     ob.show_in_front = True
     st = ob.toon_hair
-    global _suspend_update
-    _suspend_update = True
-    try:
+    with _suspended():
         st.enabled = True
         st.center = center
         st.material = materials.ensure_hair_material()
         st.outline_material = materials.ensure_outline_material()
         for k, v in settings.items():
             setattr(st, k, v)
-    finally:
-        _suspend_update = False
     for pts in (spline_points or []):
         _add_bezier(cu, [ob.matrix_world.inverted() @ p for p in pts])
     return ob
@@ -357,21 +374,29 @@ class TOONHAIR_OT_add_group(bpy.types.Operator):
     bl_description = "新しいガイドカーブ(毛束グループ)を作成。1スプライン=1毛束"
     bl_options = {'REGISTER', 'UNDO'}
 
-    name: bpy.props.StringProperty(name="名前", default="Hair_Group")
+    preset: EnumProperty(name="パーツ", items=presets.ITEMS, default='CUSTOM')
+    edit: BoolProperty(name="カーブ編集モードに入る", default=True)
 
     def execute(self, context):
+        from . import draw
         if context.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
         center = _find_center(context) or _create_center(context)
-        R = _head_radius(center)
-        pts = _strand_points(center, 0.0, 0.0, 80.0, 5.0, 1.0, 1.15)
-        ob = _new_group(context, self.name, center, [pts], width=R * 0.35,
-                        outline_width=R * 0.012, flip_offset=R * 0.003)
+        ob = draw.new_group(context, self.preset, center)
+        # one starter strand from the crown over the front, to edit freely
+        whorl = _head_dir(180, 72)
+        az = {'SIDE': 70, 'SIDEBURN': 85, 'BACK': 180, 'TAIL': 150, 'DRILL': 85}.get(self.preset, 0)
+        el = -60 if self.preset in {'SIDE', 'BACK', 'SIDEBURN', 'TAIL', 'DRILL'} else 10
+        pts = _whorl_strand(center, whorl, az, el, 1.12, n=5, hang=0.6)
+        inv = ob.matrix_world.inverted()
+        _add_bezier(ob.data, [inv @ p for p in pts])
         for o in context.selected_objects:
             o.select_set(False)
         ob.select_set(True)
         context.view_layer.objects.active = ob
         build.rebuild(ob)
+        if self.edit:
+            bpy.ops.object.mode_set(mode='EDIT')
         return {'FINISHED'}
 
 
@@ -396,9 +421,7 @@ class TOONHAIR_OT_convert_curve(bpy.types.Operator):
             ob.data.extrude = 0.0
             ob.data.dimensions = '3D'
             st = ob.toon_hair
-            global _suspend_update
-            _suspend_update = True
-            try:
+            with _suspended():
                 st.enabled = True
                 st.center = center
                 st.width = R * 0.35
@@ -406,8 +429,6 @@ class TOONHAIR_OT_convert_curve(bpy.types.Operator):
                 st.flip_offset = R * 0.003
                 st.material = materials.ensure_hair_material()
                 st.outline_material = materials.ensure_outline_material()
-            finally:
-                _suspend_update = False
             ob.show_in_front = True
             build.rebuild(ob)
         return {'FINISHED'}
@@ -578,36 +599,72 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
 
     def draw(self, context):
         lay = self.layout
-        col = lay.column(align=True)
-        col.operator("toon_hair.add_group", icon='OUTLINER_OB_CURVE')
-        col.operator("toon_hair.convert_curve", icon='CURVE_BEZCURVE')
-        col.operator("toon_hair.add_strand", icon='PLUS')
-        col.operator("toon_hair.sample_hairstyle", icon='OUTLINER_OB_HAIR')
-        col = lay.column(align=True)
-        row = col.row(align=True)
-        row.operator("toon_hair.rebuild", icon='FILE_REFRESH').all = False
-        row.operator("toon_hair.rebuild", text="全て", icon='FILE_REFRESH').all = True
-        col.operator("toon_hair.bake", icon='EXPORT')
-        g = active_group(context)
-        if g is None:
-            lay.label(text="毛束グループを選択してください", icon='INFO')
+        sc = context.scene
+
+        # ① 準備 ---------------------------------------------------------------
+        box = lay.box()
+        box.label(text="① 準備", icon='USER')
+        head = sc.toon_hair_head
+        if head is None:
+            box.label(text="頭のメッシュを選択して ↓", icon='INFO')
         else:
-            box = lay.box()
-            box.label(text=g.name, icon='CURVE_DATA')
+            box.label(text=f"頭: {head.name}", icon='CHECKMARK')
+        box.operator("toon_hair.setup_head", icon='SPHERE')
+
+        # ② 作る ---------------------------------------------------------------
+        box = lay.box()
+        box.label(text="② 作る: パーツを押して頭の上をドラッグ", icon='GREASEPENCIL')
+        grid = box.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
+        for key in presets.ORDER:
+            label, _name, icon, _fn = presets.PRESETS[key]
+            grid.operator("toon_hair.draw", text=label, icon=icon).preset = key
+        g = active_group(context)
+        row = box.row(align=True)
+        row.enabled = g is not None
+        row.operator("toon_hair.draw", text="選択中のグループに描き足す", icon='ADD').preset = 'ACTIVE'
+        col = box.column(align=True)
+        col.label(text="カーブで作る (Tabで編集モード):", icon='CURVE_BEZCURVE')
+        row = col.row(align=True)
+        row.operator_menu_enum("toon_hair.add_group", "preset", text="グループ追加", icon='OUTLINER_OB_CURVE')
+        row.operator("toon_hair.add_strand", text="カーソルに1房", icon='PLUS')
+        col.operator("toon_hair.convert_curve", icon='CURVE_DATA')
+        col.operator("toon_hair.sample_hairstyle", icon='OUTLINER_OB_HAIR')
+
+        # ③ 調整 ---------------------------------------------------------------
+        box = lay.box()
+        if g is None:
+            box.label(text="③ 調整: 毛束グループを選択してください", icon='INFO')
+        else:
             st = g.toon_hair
-            box.prop(st, "auto_update")
+            row = box.row()
+            row.label(text=f"③ 調整: {g.name}", icon='CURVE_DATA')
+            row.prop(st, "auto_update", text="", icon='FILE_REFRESH')
+            col = box.column(align=True)
+            col.row(align=True).prop(st, "lod", expand=True)
+            col.prop(st, "width")
+            col.prop(st, "thickness")
+            col.prop(st, "branches")
+            row = col.row(align=True)
+            row.prop(st, "connect", toggle=True)
+            row.prop(st, "mirror_x", toggle=True)
+            col.row(align=True).prop(st, "backface", expand=True)
             tri = build.triangle_count(st.hair_object)
-            total = sum(build.triangle_count(o.toon_hair.hair_object)
-                        for o in bpy.data.objects if build.is_group(o))
-            box.label(text=f"三角形: {tri:,}  (全グループ {total:,})", icon='MESH_DATA')
-            row = box.row(align=True)
-            row.prop(st, "center")
-            if st.center is None:
-                row.operator("toon_hair.create_center", text="", icon='ADD')
+            box.label(text=f"三角形: {tri:,}", icon='MESH_DATA')
+            box.label(text="細かい設定は下のパネル / カーブ編集: Alt+S 幅, Ctrl+T ねじれ", icon='BLANK1')
+
+        # ④ 書き出し -----------------------------------------------------------
+        box = lay.box()
+        total = sum(build.triangle_count(o.toon_hair.hair_object)
+                    for o in bpy.data.objects if build.is_group(o))
+        box.label(text=f"④ 書き出し (全体 三角形 {total:,})", icon='EXPORT')
+        row = box.row(align=True)
+        row.operator("toon_hair.bake", icon='EXPORT')
+        row.operator("toon_hair.rebuild", text="", icon='FILE_REFRESH').all = True
 
 
 class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
     bl_label = "形状 / トポロジー"
+    bl_options = {'DEFAULT_CLOSED'}
     bl_parent_id = "TOONHAIR_PT_main"
 
     @classmethod
@@ -625,6 +682,7 @@ class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
         col.prop(st, "length_segments")
         col.prop(st, "profile_segments")
         lay.prop(st, "tip_bias")
+        lay.prop(st, "bend_density")
         lay.separator()
         lay.prop(st, "backface")
         lay.prop(st, "profile")
@@ -633,6 +691,7 @@ class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
         sub = col.column(align=True)
         sub.enabled = st.backface == 'CLOSED'
         sub.prop(st, "thickness")
+        sub.prop(st, "bevel")
         col.prop(st, "curvature")
         if st.backface == 'FLIPPED':
             lay.prop(st, "flip_offset")
@@ -650,11 +709,23 @@ class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
         if st.backface == 'CLOSED':
             lay.prop(st, "root_cap")
         lay.prop(st, "mirror_x")
+        col = lay.column(align=True)
+        col.label(text="カール / うねり")
+        col.prop(st, "curl_turns")
+        sub = col.column(align=True)
+        sub.active = st.curl_turns > 0.0
+        sub.prop(st, "curl_radius")
+        sub.prop(st, "curl_start")
+        col.prop(st, "wave_amp")
+        sub = col.column(align=True)
+        sub.active = st.wave_amp > 0.0
+        sub.prop(st, "wave_freq")
         lay.label(text="ヒント: 編集モードで Alt+S=部分的な幅, Ctrl+T=ねじり", icon='INFO')
 
 
 class TOONHAIR_PT_branch(_Panel, bpy.types.Panel):
     bl_label = "分岐毛"
+    bl_options = {'DEFAULT_CLOSED'}
     bl_parent_id = "TOONHAIR_PT_main"
 
     @classmethod
@@ -680,6 +751,7 @@ class TOONHAIR_PT_branch(_Panel, bpy.types.Panel):
 
 class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
     bl_label = "横連結 (隣の房とつなぐ)"
+    bl_options = {'DEFAULT_CLOSED'}
     bl_parent_id = "TOONHAIR_PT_main"
 
     @classmethod
@@ -710,6 +782,7 @@ class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
 
 class TOONHAIR_PT_shading(_Panel, bpy.types.Panel):
     bl_label = "法線 / マテリアル"
+    bl_options = {'DEFAULT_CLOSED'}
     bl_parent_id = "TOONHAIR_PT_main"
 
     @classmethod
@@ -731,6 +804,7 @@ class TOONHAIR_PT_shading(_Panel, bpy.types.Panel):
 
 class TOONHAIR_PT_outline(_Panel, bpy.types.Panel):
     bl_label = "アウトライン"
+    bl_options = {'DEFAULT_CLOSED'}
     bl_parent_id = "TOONHAIR_PT_main"
 
     @classmethod
@@ -809,8 +883,11 @@ classes = (
 
 
 def register():
-    for c in classes:
+    from . import draw
+    for c in classes + draw.classes:
         bpy.utils.register_class(c)
+    bpy.types.Scene.toon_hair_head = PointerProperty(
+        name="頭", type=bpy.types.Object, poll=lambda self, ob: ob.type == 'MESH')
     bpy.types.Object.toon_hair = PointerProperty(type=ToonHairSettings)
     bpy.types.Object.toon_hair_owner = PointerProperty(type=bpy.types.Object)
     if _on_depsgraph not in bpy.app.handlers.depsgraph_update_post:
@@ -820,7 +897,9 @@ def register():
 def unregister():
     if _on_depsgraph in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph)
+    from . import draw
+    del bpy.types.Scene.toon_hair_head
     del bpy.types.Object.toon_hair_owner
     del bpy.types.Object.toon_hair
-    for c in reversed(classes):
+    for c in reversed(classes + draw.classes):
         bpy.utils.unregister_class(c)
