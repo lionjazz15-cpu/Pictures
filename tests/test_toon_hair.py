@@ -51,7 +51,10 @@ def analyse(ob, st, tag):
             vsizes.setdefault(v, set()).add(len(p.vertices))
     for p in me.polygons:
         if len(p.vertices) == 3:
-            if not any(vsizes[v] == {3} for v in p.vertices):
+            fan = any(vsizes[v] == {3} for v in p.vertices)
+            # end caps without bevel: a triangle lying in one ring (same t)
+            ring = len({round(t_attr[v].value, 6) for v in p.vertices}) == 1
+            if not (fan or ring):
                 check(False, f"{tag}: triangle away from tip")
                 break
     # no degenerate faces
@@ -107,6 +110,66 @@ def islands(me):
         a, b = e.vertices
         parent[find(a)] = find(b)
     return len({find(i) for i in range(len(me.vertices))})
+
+
+def test_live_scope():
+    """Unrelated depsgraph updates must not rebuild; manual hiding sticks."""
+    g = bpy.data.objects["Hair_Bangs"]
+    st = g.toon_hair
+    st.outline = True
+    build.rebuild(g)
+    calls = []
+    orig = build.rebuild
+
+    def counting(ob):
+        calls.append(ob.name)
+        return orig(ob)
+    build.rebuild = counting
+    try:
+        st.outline_object.hide_render = True
+        st.outline_object.hide_viewport = True
+        other = bpy.data.objects.new("TH_test_empty", None)
+        bpy.context.scene.collection.objects.link(other)
+        other.hide_viewport = True
+        bpy.context.view_layer.update()
+        other.location.x += 1.0
+        bpy.context.view_layer.update()
+        check(not calls, f"unrelated updates rebuilt groups: {calls}")
+        check(st.outline_object.hide_render, "manually hidden outline was shown again")
+        # a real edit still rebuilds
+        g.data.splines[0].bezier_points[-1].co.z -= 0.01
+        g.data.update_tag()
+        bpy.context.view_layer.update()
+        check(calls.count("Hair_Bangs") == 1, f"curve edit should rebuild once: {calls}")
+        check(st.outline_object.hide_render, "outline visibility changed by a rebuild")
+    finally:
+        build.rebuild = orig
+
+
+def test_pattsun():
+    """Blunt-cut bangs: one continuous hem, cut straight at the plane."""
+    from toon_hair_studio import draw, core
+    bpy.ops.toon_hair.add_group(preset='PATTSUN', edit=False)
+    g = bpy.context.active_object
+    st = g.toon_hair
+    sp = g.data.splines[0]
+    base = [bp.co.copy() for bp in sp.bezier_points]
+    g.data.splines.remove(sp)
+    for dx in (-0.06, -0.03, 0.0, 0.03, 0.06):
+        draw.add_bezier(g.data, [p + Vector((dx, 0.0, 0.0)) for p in base])
+    for bev in (0.3, 0.0):
+        st.bevel = bev
+        build.rebuild(g)
+        me = st.hair_object.data
+        check(islands(me) == 1, f"pattsun: hem not continuous ({islands(me)} islands)")
+        analyse(g, st, f"pattsun/bevel{bev}")
+        if bev > 0:
+            check(all(len(p.vertices) == 4 for p in me.polygons), "pattsun with bevel should be all quads")
+    # the hem lies on the cut plane
+    center = core.Center(st.center.matrix_world)
+    mw = st.hair_object.matrix_world
+    zs = [(center.inv @ (mw @ v.co)).z for v in me.vertices]
+    check(abs(min(zs) - st.cut_height) < 0.08, f"pattsun: hem at {min(zs):.3f}, cut at {st.cut_height}")
 
 
 def test_manual_links():
@@ -218,6 +281,8 @@ def test_new_features():
     analyse(g, st, "roll+flip")
 
     test_manual_links()
+    test_pattsun()
+    test_live_scope()
 
     # density layout puts more loops at bends and tips
     prm = core.StrandParams(length_segments=12, tip_bias=0.5, bend_density=1.0)
@@ -251,11 +316,8 @@ def main():
             st.length_segments, st.profile_segments = th.LOD_TABLE[lod]
             build.rebuild(ob)
             tag = f"{ob.name}/{'conn' if connect else 'indep'}/{bf}/{lod}/{prof}/{tip}/br{br}"
-            if tip == 'BLUNT':
-                # blunt closed tips use one cap n-gon per lock by design
+            if tip == 'BLUNT' and bf != 'CLOSED':
                 me = st.hair_object.data
-                if bf == 'CLOSED':
-                    continue
                 check(all(len(p.vertices) == 4 for p in me.polygons), f"{tag}: blunt should be all quads")
                 continue
             v, f, tris = analyse(ob, st, tag)

@@ -8,6 +8,10 @@ PRESETS = {
         connect=True, split=0.65, connect_ratio=2.2,
         branches=2, branch_jitter=1, branch_pos=0.75, branch_spread=0.2,
         branch_length_var=0.4, branch_pattern='RANDOM')),
+    'PATTSUN': ("ぱっつん前髪", "Hair_BluntBangs", 'ALIGN_JUSTIFY', lambda R: dict(
+        width=R * 0.45, root_ratio=0.35, bulge_pos=0.45, tip_mode='CUT', cut_taper=0.04,
+        cut_enable=True, cut_height=0.25, connect=True, split=1.0, connect_ratio=2.4,
+        connect_style='SMOOTH', curvature=0.08)),
     'SIDE': ("横髪", "Hair_Side", 'MOD_CURVE', lambda R: dict(
         width=R * 0.55, root_ratio=0.35, bulge_pos=0.5, tip_shape=1.8, mirror_x=True,
         connect=True, split=0.55, connect_ratio=2.2,
@@ -41,7 +45,7 @@ PRESETS = {
     'CUSTOM': ("汎用", "Hair_Group", 'CURVE_BEZCURVE', lambda R: dict(width=R * 0.35)),
 }
 
-ORDER = ('BANGS', 'SIDE', 'BACK', 'BACK_VOLUME', 'SIDEBURN', 'AHOGE', 'TAIL', 'DRILL', 'CUSTOM')
+ORDER = ('BANGS', 'PATTSUN', 'SIDE', 'BACK', 'BACK_VOLUME', 'SIDEBURN', 'AHOGE', 'TAIL', 'DRILL', 'CUSTOM')
 
 ITEMS = [(k, PRESETS[k][0], "", PRESETS[k][2], i) for i, k in enumerate(ORDER)]
 

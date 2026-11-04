@@ -178,10 +178,17 @@ class ToonHairSettings(bpy.types.PropertyGroup):
                              description="<1 鋭く尖る / 1 直線 / >1 ふっくらしてから尖る")
     tip_mode: EnumProperty(
         name="毛先",
-        items=[('POINT', "尖り", "1頂点に収束 (三角形は毛先のみ)"),
-               ('BLUNT', "平ら", "全て四角形・切りっぱなし")],
+        items=[('POINT', "尖り", "房ごとに1頂点に収束 (三角形は毛先のみ)"),
+               ('BLUNT', "平ら", "房ごとに細くなって切りっぱなし"),
+               ('CUT', "ぱっつん", "幅を保ったまま切りそろえ。横連結すると裾まで一続き")],
         default='POINT', update=_upd)
     tip_min: FloatProperty(name="毛先の最小幅", default=0.12, min=0.0, max=1.0, update=_upd)
+    cut_taper: FloatProperty(name="裾の細り", default=0.05, min=0.0, max=0.9, update=_upd,
+                             description="ぱっつんの時、裾に向かって房を細くする量")
+    cut_enable: BoolProperty(name="水平カット", default=False, update=_upd,
+                             description="全部の房を頭基準の高さでまっすぐ切りそろえる (ぱっつん)")
+    cut_height: FloatProperty(name="カットの高さ", default=0.2, min=-1.5, max=1.0, update=_upd,
+                              description="頭の中心を0、頭頂を1、あごの辺りを-1とした高さ")
     root_cap: BoolProperty(name="根元を閉じる", default=False, update=_upd)
     twist: FloatProperty(name="ねじれ", default=0.0, subtype='ANGLE', soft_min=-math.pi * 2,
                          soft_max=math.pi * 2, update=_upd)
@@ -797,6 +804,13 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
             col.prop(st, "thickness")
             col.prop(st, "branches")
             col.prop(st, "layers", text="重ね")
+            col.row(align=True).prop(st, "tip_mode", expand=True)
+            if st.tip_mode == 'CUT' or st.cut_enable:
+                row = col.row(align=True)
+                row.prop(st, "cut_enable", text="水平カット", toggle=True)
+                sub = row.row(align=True)
+                sub.active = st.cut_enable
+                sub.prop(st, "cut_height", text="高さ")
             row = col.row(align=True)
             row.prop(st, "connect", text="自動でつなぐ", toggle=True)
             row.prop(st, "mirror_x", toggle=True)
@@ -861,6 +875,13 @@ class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
         lay.prop(st, "tip_mode")
         if st.tip_mode == 'BLUNT':
             lay.prop(st, "tip_min")
+        if st.tip_mode == 'CUT':
+            lay.prop(st, "cut_taper")
+        row = lay.row(heading="水平カット")
+        row.prop(st, "cut_enable", text="")
+        sub = row.row()
+        sub.active = st.cut_enable
+        sub.prop(st, "cut_height")
         col = lay.column(align=True)
         col.prop(st, "twist")
         col.prop(st, "root_extend")
@@ -1038,7 +1059,7 @@ class TOONHAIR_PT_outline(_Panel, bpy.types.Panel):
 def _on_depsgraph(scene, depsgraph):
     if build._building or _suspend_update:
         return
-    dirty = set()
+    candidates = set()
     centers = set()
     for u in depsgraph.updates:
         idb = u.id
@@ -1046,17 +1067,19 @@ def _on_depsgraph(scene, depsgraph):
             ob = idb.original
             if build.is_group(ob):
                 if (u.is_updated_geometry or u.is_updated_transform) and ob.toon_hair.auto_update:
-                    dirty.add(ob.name)
+                    candidates.add(ob.name)
             elif u.is_updated_transform:
                 centers.add(ob.name)
     if centers:
         for ob in bpy.data.objects:
             if (build.is_group(ob) and ob.toon_hair.auto_update and ob.toon_hair.center is not None
                     and ob.toon_hair.center.name in centers):
-                dirty.add(ob.name)
-    for name in dirty:
+                candidates.add(ob.name)
+    for name in candidates:
         ob = bpy.data.objects.get(name)
-        if ob is not None:
+        # Blender also reports objects as updated on unrelated changes (e.g.
+        # visibility): only rebuild when the curves or the head really moved
+        if ob is not None and build.needs_rebuild(ob):
             try:
                 build.rebuild(ob)
             except Exception as ex:  # never break the depsgraph loop

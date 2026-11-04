@@ -230,8 +230,11 @@ def compute_frames(points, center, twist=0.0, tilt_sign=1.0, smooth_passes=2, ro
 # shape functions
 # --------------------------------------------------------------------------
 
-def width_factor(t, root_ratio, bulge_pos, tip_shape, tip_min=0.0):
-    """Anime lock silhouette: root -> swell -> tip."""
+def width_factor(t, root_ratio, bulge_pos, tip_shape, tip_min=0.0, cut_taper=None):
+    """Anime lock silhouette: root -> swell -> tip.
+
+    cut_taper (blunt-cut 'ぱっつん' tips): keep the width to the end, only
+    narrowing linearly by that fraction."""
     b = min(max(bulge_pos, 0.0), 0.95)
     if t < b and b > 1e-4:
         s = t / b
@@ -239,6 +242,8 @@ def width_factor(t, root_ratio, bulge_pos, tip_shape, tip_min=0.0):
     else:
         s = (t - b) / (1.0 - b) if b < 1.0 else 1.0
         s = min(max(s, 0.0), 1.0)
+        if cut_taper is not None:
+            return max(0.05, 1.0 - cut_taper * s)
         w = max(0.0, 1.0 - s ** max(tip_shape, 0.05))
     return max(w, tip_min)
 
@@ -368,6 +373,9 @@ class StrandParams:
     order = 'AZIMUTH'         # AZIMUTH / CURVE
     connect_style = 'SMOOTH'  # SMOOTH (なめらか) / GROOVE (毛束の溝)
     smooth_iterations = 4
+    cut_taper = 0.05          # 'CUT' tips: narrowing towards the hem
+    cut_enable = False        # trim every guide at a horizontal plane
+    cut_height = 0.2          # head-local height of that plane (-1..1)
     bevel = 0.3               # closed edges: side band height (fraction of thickness), 0 = knife edge
     # loop density (HairHarpy-style equidistribution)
     bend_density = 0.5
@@ -608,6 +616,9 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=N
         segs = max(segs, int(math.ceil(prm.curl_turns * 10.0)) + 4)   # enough rows per turn
     point_tip = prm.tip_mode == 'POINT'
     tip_min = 0.0 if point_tip else prm.tip_min
+    cut = prm.cut_taper if prm.tip_mode == 'CUT' else None
+    if cut is not None:
+        tip_min = 0.0
     dens = getattr(prm, "density_profile", None)
     if not dens:
         dens = density_profile([samples], prm)
@@ -616,7 +627,8 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=N
         nb = 1
 
     def parent_w(t, rad):
-        return prm.width * width_factor(t, prm.root_ratio, prm.bulge_pos, prm.tip_shape, tip_min) * max(rad, 0.0)
+        return prm.width * width_factor(t, prm.root_ratio, prm.bulge_pos, prm.tip_shape, tip_min,
+                                        cut) * max(rad, 0.0)
 
     tb = min(max(prm.branch_pos, 0.05), 0.9)
     n_pre = min(max(int(round(tb * segs)), 1), segs - 2) if segs >= 4 else 1
@@ -695,7 +707,7 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=N
             else:
                 u = (t - tb) / max(t_end - tb, 1e-6)
                 off = xk * Wb * 0.5 + xk * prm.branch_spread * Wb * blen * (u ** 1.5)
-                w = Wb / nb * width_factor(u, 1.0, 0.25, prm.tip_shape, tip_min)
+                w = Wb / nb * width_factor(u, 1.0, 0.25, prm.tip_shape, tip_min, cut)
             pts.append((P + B * off, rad, tilt, t))
             widths.append(w)
         frames = compute_frames(pts, center, twist=prm.twist, tilt_sign=tilt_sign, smooth_passes=1,
@@ -828,7 +840,8 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
     nr = min(len(lk.frames) for lk in locks)
     point_tip = prm.tip_mode == 'POINT'
     rc = nr - 1 if point_tip else nr
-    r1 = [min(r, rc - 2) for r in split_rows]
+    # 'CUT' (ぱっつん) hems may stay joined through the last row
+    r1 = [min(r, rc - 1 if prm.tip_mode == 'CUT' else rc - 2) for r in split_rows]
     r0 = []
     smooth_lat = prm.connect_style == 'SMOOTH'
     for b in range(K - 1):
@@ -1066,6 +1079,27 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
         return index[key(side, k, i, c)]
 
     band_faces = []
+
+    def cap_strip(k, i):
+        """Close a ring with a strip of quads between its front and back rows
+        (triangles where front and back share an edge vertex)."""
+        lk = locks[k]
+        cols = list(range(S + 1)) if not lk.rev else list(range(S, -1, -1))
+        ids = []
+        v = lk.ts[i]
+        for j in range(S):
+            f = [V('F', k, i, cols[j]), V('F', k, i, cols[j + 1]),
+                 V('B', k, i, cols[j + 1]), V('B', k, i, cols[j])]
+            uniq = []
+            for q in f:
+                if q not in uniq:
+                    uniq.append(q)
+            if len(uniq) < 3:
+                continue
+            ids.append(len(g.faces))
+            g.add_face(uniq, [(j / S, v)] * len(uniq))
+        return ids
+
     for k, lk in enumerate(locks):
         cols = list(range(S + 1)) if not lk.rev else list(range(S, -1, -1))
         us = [j / S for j in range(S + 1)]
@@ -1101,7 +1135,7 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
                 b, ub = loop[(j + 1) % len(loop)]
                 g.add_face((a, b, tip), ((ua, vt), (ub, vt), (0.5, ts[nr - 1])))
         elif closed:
-            g.add_face([a for a, _u in loop], [(u, vt) for _a, u in loop])
+            band_faces.extend(cap_strip(k, i))
 
     # walls where two joined locks separate (tip side) or merge (root side)
     wall_start = len(g.faces)
@@ -1111,7 +1145,7 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
                 continue
             T = locks[b].frames[r1[b]][1] + locks[b + 1].frames[r1[b]][1]
             for i, i1, sgn in ((r1[b], r1[b] + 1, 1.0), (r0[b], r0[b] - 1, -1.0)):
-                if i1 < 0:
+                if i1 < 0 or i1 >= rc:
                     continue
                 Fb, Bb = V('F', b, i, S), V('B', b, i, S)
                 v0, v1 = locks[b].ts[i], locks[b].ts[i1]
@@ -1131,25 +1165,8 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
                     g.add_face(f, ((0.5, v0), (0.5, v1), (0.5, v1), (0.5, v0)))
 
     if closed and prm.root_cap:
-        # one cap per run of locks that are joined at the root row
-        start = 0
         for k in range(K):
-            if k < K - 1 and right_shared(k, 0):
-                continue
-            front, back = [], []
-            for kk in range(start, k + 1):
-                for c in range(S + 1):
-                    for side, lst in (('F', front), ('B', back)):
-                        vi = V(side, kk, 0, c)
-                        if not lst or lst[-1] != vi:
-                            lst.append(vi)
-            ring = front + [q for q in reversed(back) if q not in (front[0], front[-1])]
-            n = newell([g.verts[q] for q in ring])
-            T0 = sum((locks[kk].frames[0][1] for kk in range(start, k + 1)), Vector())
-            if n.dot(T0) > 0.0:
-                ring.reverse()
-            g.add_face(ring, [(0.5, 0.0)] * len(ring))
-            start = k + 1
+            band_faces.extend(cap_strip(k, 0))
 
     _orient_like_neighbours(g, band_faces + list(range(wall_start, len(g.faces))))
 
@@ -1331,6 +1348,21 @@ def build_hull(g, vn, prm, closed):
 # public entry point
 # --------------------------------------------------------------------------
 
+def cut_at_height(samples, center, height):
+    """Trim a guide where it first goes down through a horizontal plane at
+    head-local height `height` (-1 = chin level, 1 = top of the head)."""
+    zs = [center.inv @ p for p, _r, _t in samples]
+    for i in range(1, len(samples)):
+        z0, z1 = zs[i - 1].z, zs[i].z
+        if z0 >= height > z1:
+            f = (z0 - height) / (z0 - z1) if z0 != z1 else 0.0
+            a, b = samples[i - 1], samples[i]
+            end = (a[0].lerp(b[0], f), a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f)
+            out = list(samples[:i]) + [end]
+            return out if len(out) >= 2 else samples
+    return samples
+
+
 def layer_defs(prm):
     """(side, length, width scale, tip flip) for each generated layer:
     the middle layer plus optional front (+1) / back (-1) layers."""
@@ -1349,6 +1381,8 @@ def build_group(spline_samples, center, prm, mirror=False, with_outline=True, li
     joined laterally only within itself, so front and back layers overlap
     the middle one like hand-made layered hair."""
     import random
+    if prm.cut_enable:
+        spline_samples = [cut_at_height(smp, center, prm.cut_height) for smp in spline_samples]
     prm.density_profile = density_profile(spline_samples, prm)
     hair = Geo()
     outline = Geo() if (with_outline and prm.outline) else None

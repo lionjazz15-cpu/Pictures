@@ -24,9 +24,32 @@ PARAM_KEYS = (
     "bevel", "bend_density", "curl_turns", "curl_radius", "curl_start", "wave_amp", "wave_freq",
     "lift", "puff", "puff_pos", "tip_flip", "roll", "layers", "layer_gap", "layer_shift",
     "layer_front_len", "layer_back_len", "layer_width", "layer_flip",
+    "cut_taper", "cut_enable", "cut_height",
 )
 
 _building = False
+_last_sig = {}     # group name -> signature of the inputs of its last rebuild
+
+
+def signature(curve_ob):
+    """What the live rebuild depends on besides the settings: the guide
+    curves, the group's transform and its head centre's transform."""
+    def mat(m):
+        return tuple(round(x, 7) for row in m for x in row)
+    sig = [mat(curve_ob.matrix_world)]
+    c = curve_ob.toon_hair.center
+    sig.append(mat(c.matrix_world) if c is not None else None)
+    for sp in curve_ob.data.splines:
+        if sp.type == 'BEZIER':
+            sig.append(tuple((tuple(bp.co), tuple(bp.handle_left), tuple(bp.handle_right),
+                              round(bp.radius, 6), round(bp.tilt, 6)) for bp in sp.bezier_points))
+        else:
+            sig.append(tuple((tuple(p.co), round(p.radius, 6), round(p.tilt, 6)) for p in sp.points))
+    return tuple(sig)
+
+
+def needs_rebuild(curve_ob):
+    return _last_sig.get(curve_ob.name) != signature(curve_ob)
 
 
 def is_group(ob):
@@ -227,15 +250,22 @@ def rebuild(curve_ob):
 
         oob = st.outline_object
         if oob is not None:
+            # only touch visibility when the outline is switched on/off, so a
+            # user hiding the outline object by hand keeps it hidden
             if outline is not None:
                 write_mesh(oob.data, outline, custom_normals=False)
                 _assign_material(oob.data, st.outline_material)
-                oob.hide_viewport = False
-                oob.hide_render = False
+                if oob.get("th_auto_hidden"):
+                    oob.hide_viewport = False
+                    oob.hide_render = False
+                    del oob["th_auto_hidden"]
             else:
                 oob.data.clear_geometry()
-                oob.hide_viewport = True
-                oob.hide_render = True
+                if not oob.get("th_auto_hidden"):
+                    oob.hide_viewport = True
+                    oob.hide_render = True
+                    oob["th_auto_hidden"] = True
+        _last_sig[curve_ob.name] = signature(curve_ob)
     finally:
         _building = False
 
