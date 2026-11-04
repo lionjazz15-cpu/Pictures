@@ -60,9 +60,15 @@ def generate(curve_ob, world=True, with_outline=True):
     prm = params_from(st)
     center = center_of(st)
     mw = curve_ob.matrix_world
-    samples = [s for s in (core.sample_spline(sp, mw) for sp in curve_ob.data.splines) if len(s) >= 2]
+    splines = list(curve_ob.data.splines)
+    raw = [core.sample_spline(sp, mw) for sp in splines]
+    keep = [i for i, smp in enumerate(raw) if len(smp) >= 2]
+    remap = {old: new for new, old in enumerate(keep)}
+    samples = [raw[i] for i in keep]
+    links = [(remap[l.a], remap[l.b], l.t0, l.t1) for l in st.links
+             if l.a in remap and l.b in remap and l.a != l.b]
     hair, outline = core.build_group(samples, center, prm, mirror=st.mirror_x,
-                                     with_outline=with_outline)
+                                     with_outline=with_outline, links=links)
     if not world:
         inv = mw.inverted_safe()
         hair.transform(inv)
@@ -232,6 +238,47 @@ def rebuild(curve_ob):
                 oob.hide_render = True
     finally:
         _building = False
+
+
+def control_point_ts(spline):
+    """Arc-length parameter (0..1) of each control point of a spline."""
+    smp = core.sample_spline(spline, Matrix.Identity(4))
+    if len(smp) < 2:
+        return []
+    L = [0.0]
+    for i in range(1, len(smp)):
+        L.append(L[-1] + (smp[i][0] - smp[i - 1][0]).length)
+    total = L[-1] or 1.0
+    if spline.type == 'BEZIER':
+        n, step = len(spline.bezier_points), 32
+    elif spline.type == 'NURBS' and len(spline.points) >= 3:
+        n, step = len(spline.points), 32
+    else:
+        n, step = len(spline.points), 4
+    return [L[min(k * step, len(L) - 1)] / total for k in range(n)]
+
+
+def selected_ts(spline):
+    if spline.type == 'BEZIER':
+        sel = [bp.select_control_point for bp in spline.bezier_points]
+    else:
+        sel = [p.select for p in spline.points]
+    ts = control_point_ts(spline)
+    return [t for t, s_ in zip(ts, sel) if s_]
+
+
+def on_spline_removed(curve_ob, idx):
+    """Keep manual links pointing at the right splines after a removal."""
+    links = curve_ob.toon_hair.links
+    for i in range(len(links) - 1, -1, -1):
+        l = links[i]
+        if idx in (l.a, l.b):
+            links.remove(i)
+            continue
+        if l.a > idx:
+            l.a -= 1
+        if l.b > idx:
+            l.b -= 1
 
 
 def triangle_count(ob):

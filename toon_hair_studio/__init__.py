@@ -103,7 +103,16 @@ def _is_mesh(self, ob):
     return ob.type == 'MESH'
 
 
+class ToonHairLink(bpy.types.PropertyGroup):
+    """A manual lateral join between two guide splines over [t0, t1]."""
+    a: IntProperty()
+    b: IntProperty()
+    t0: FloatProperty(min=0.0, max=1.0)
+    t1: FloatProperty(min=0.0, max=1.0)
+
+
 class ToonHairSettings(bpy.types.PropertyGroup):
+    links: bpy.props.CollectionProperty(type=ToonHairLink)
     enabled: BoolProperty(default=False)
     auto_update: BoolProperty(name="自動更新 Live", default=True,
                               description="カーブを編集したら即メッシュを再生成")
@@ -586,6 +595,89 @@ class TOONHAIR_OT_sample(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _selected_splines(g):
+    """[(spline index, selected arc params)] of splines with selected points."""
+    out = []
+    for idx, sp in enumerate(g.data.splines):
+        ts = build.selected_ts(sp)
+        if ts:
+            out.append((idx, ts))
+    return out
+
+
+class TOONHAIR_OT_link_selected(bpy.types.Operator):
+    bl_idname = "toon_hair.link_selected"
+    bl_label = "選択点をつなぐ"
+    bl_description = ("編集モードで選んだ点の所だけ、隣のカーブの房とつなぎます。"
+                      "各カーブ1点=根元からその点まで / 2点以上=その間だけ。3本以上なら隣同士を順に")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return active_group(context) is not None
+
+    def execute(self, context):
+        g = active_group(context)
+        if context.mode == 'EDIT_CURVE':
+            # make sure the edit-mode selection is visible to the data
+            g.update_from_editmode()
+        sel = _selected_splines(g)
+        if len(sel) < 2:
+            self.report({'WARNING'}, "2本以上のカーブで点を選択してください (編集モード)")
+            return {'CANCELLED'}
+        center = build.center_of(g.toon_hair)
+        mw = g.matrix_world
+
+        def az(idx):
+            smp = core.sample_spline(g.data.splines[idx], mw)
+            return center.head_coord(smp[len(smp) // 2][0])[0]
+        sel.sort(key=lambda it: az(it[0]))
+        links = g.toon_hair.links
+        made = 0
+        for (ia, ta), (ib, tb) in zip(sel, sel[1:]):
+            ra = (0.0, ta[0]) if len(ta) == 1 else (min(ta), max(ta))
+            rb = (0.0, tb[0]) if len(tb) == 1 else (min(tb), max(tb))
+            t0, t1 = 0.5 * (ra[0] + rb[0]), 0.5 * (ra[1] + rb[1])
+            for i in range(len(links) - 1, -1, -1):
+                if {links[i].a, links[i].b} == {ia, ib}:
+                    links.remove(i)
+            l = links.add()
+            l.a, l.b, l.t0, l.t1 = ia, ib, t0, t1
+            made += 1
+        build.rebuild(g)
+        self.report({'INFO'}, f"{made} か所つなぎました (自動の横連結より優先)")
+        return {'FINISHED'}
+
+
+class TOONHAIR_OT_unlink(bpy.types.Operator):
+    bl_idname = "toon_hair.unlink"
+    bl_label = "つなぎを解除"
+    bl_description = "点を選んだカーブの手動のつなぎを解除 (全部: すべて解除)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    all: BoolProperty(name="全部", default=False)
+
+    @classmethod
+    def poll(cls, context):
+        g = active_group(context)
+        return g is not None and len(g.toon_hair.links) > 0
+
+    def execute(self, context):
+        g = active_group(context)
+        links = g.toon_hair.links
+        if self.all:
+            links.clear()
+        else:
+            if context.mode == 'EDIT_CURVE':
+                g.update_from_editmode()
+            idx = {i for i, _ts in _selected_splines(g)}
+            for i in range(len(links) - 1, -1, -1):
+                if links[i].a in idx or links[i].b in idx:
+                    links.remove(i)
+        build.rebuild(g)
+        return {'FINISHED'}
+
+
 class TOONHAIR_OT_rebuild(bpy.types.Operator):
     bl_idname = "toon_hair.rebuild"
     bl_label = "再生成"
@@ -706,8 +798,13 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
             col.prop(st, "branches")
             col.prop(st, "layers", text="重ね")
             row = col.row(align=True)
-            row.prop(st, "connect", toggle=True)
+            row.prop(st, "connect", text="自動でつなぐ", toggle=True)
             row.prop(st, "mirror_x", toggle=True)
+            row = col.row(align=True)
+            row.operator("toon_hair.link_selected", text="選択点をつなぐ", icon='LINKED')
+            row.operator("toon_hair.unlink", text="", icon='UNLINKED').all = False
+            if st.links:
+                col.label(text=f"手動つなぎ {len(st.links)} か所 (自動より優先)", icon='LINKED')
             col.row(align=True).prop(st, "backface", expand=True)
             tri = build.triangle_count(st.hair_object)
             box.label(text=f"三角形: {tri:,}", icon='MESH_DATA')
@@ -863,7 +960,16 @@ class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
         lay = self.layout
         lay.use_property_split = True
         lay.use_property_decorate = False
-        lay.active = st.connect
+        box = lay.box()
+        box.label(text=f"手動でつなぐ ({len(st.links)} か所, 自動より優先)", icon='LINKED')
+        box.label(text="編集モードで各カーブの点を選ぶ: 1点=根元から / 2点=その間", icon='BLANK1')
+        row = box.row(align=True)
+        row.operator("toon_hair.link_selected", icon='LINKED')
+        row.operator("toon_hair.unlink", text="解除", icon='UNLINKED').all = False
+        row.operator("toon_hair.unlink", text="全部", icon='X').all = True
+        col = lay.column()
+        col.active = st.connect and len(st.links) == 0
+        lay = col
         lay.prop(st, "connect_style", expand=True)
         if st.connect_style == 'SMOOTH':
             lay.prop(st, "smooth_iterations")
@@ -962,12 +1068,15 @@ def _on_depsgraph(scene, depsgraph):
 # ==========================================================================
 
 classes = (
+    ToonHairLink,
     ToonHairSettings,
     TOONHAIR_OT_create_center,
     TOONHAIR_OT_add_group,
     TOONHAIR_OT_convert_curve,
     TOONHAIR_OT_add_strand,
     TOONHAIR_OT_sample,
+    TOONHAIR_OT_link_selected,
+    TOONHAIR_OT_unlink,
     TOONHAIR_OT_rebuild,
     TOONHAIR_OT_bake,
     TOONHAIR_PT_main,

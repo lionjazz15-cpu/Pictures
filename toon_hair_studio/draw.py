@@ -307,6 +307,7 @@ class TOONHAIR_OT_draw(bpy.types.Operator):
                         best, best_d = idx, (s - mouse).length
         if best is not None:
             g.data.splines.remove(g.data.splines[best])
+            build.on_spline_removed(g, best)
             self.added = [i if i < best else i - 1 for i in self.added if i != best]
             build.rebuild(g)
 
@@ -317,6 +318,7 @@ class TOONHAIR_OT_draw(bpy.types.Operator):
         idx = self.added.pop()
         if idx < len(g.data.splines):
             g.data.splines.remove(g.data.splines[idx])
+            build.on_spline_removed(g, idx)
             build.rebuild(g)
 
     # ---- modal -----------------------------------------------------------------

@@ -95,6 +95,66 @@ def analyse(ob, st, tag):
     return len(me.vertices), len(me.polygons), sizes.count(3)
 
 
+def islands(me):
+    parent = list(range(len(me.vertices)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for e in me.edges:
+        a, b = e.vertices
+        parent[find(a)] = find(b)
+    return len({find(i) for i in range(len(me.vertices))})
+
+
+def test_manual_links():
+    """Join two neighbouring guides only where points are selected."""
+    from toon_hair_studio import draw
+    bpy.ops.toon_hair.add_group(preset='CUSTOM', edit=False)
+    g = bpy.context.active_object
+    st = g.toon_hair
+    st.connect = False
+    st.width = 0.035
+    sp = g.data.splines[0]
+    pts = [bp.co.copy() for bp in sp.bezier_points]
+    draw.add_bezier(g.data, [p + Vector((0.03, 0.0, 0.0)) for p in pts])
+    build.rebuild(g)
+    me = st.hair_object.data
+    check(islands(me) == 2, f"links: expected 2 separate locks, got {islands(me)}")
+
+    def select(spline_points):
+        for i, s_ in enumerate(g.data.splines):
+            for j, bp in enumerate(s_.bezier_points):
+                bp.select_control_point = (i, j) in spline_points
+    n = len(pts)
+    # one point on each curve: join from the root to there
+    select({(0, n // 2), (1, n // 2)})
+    res = bpy.ops.toon_hair.link_selected()
+    check(res == {'FINISHED'} and len(st.links) == 1, "link_selected failed")
+    check(islands(st.hair_object.data) == 1, "links: root-to-point join did not merge the locks")
+    analyse(g, st, "links/root-to-point")
+    # two points on each curve: join only in between
+    select({(0, 1), (0, n - 2), (1, 1), (1, n - 2)})
+    bpy.ops.toon_hair.link_selected()
+    check(len(st.links) == 1, "re-linking the same pair should replace the link")
+    check(islands(st.hair_object.data) == 1, "links: band join did not merge the locks")
+    check(st.links[0].t0 > 0.05, "band join should not start at the root")
+    analyse(g, st, "links/band")
+    # unlink
+    bpy.ops.toon_hair.unlink(all=True)
+    check(islands(st.hair_object.data) == 2, "unlink did not separate the locks")
+    # edit-mode path: select everything and link
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.curve.select_all(action='SELECT')
+    res = bpy.ops.toon_hair.link_selected()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    check(res == {'FINISHED'} and len(st.links) == 1, "edit-mode link failed")
+    check(islands(st.hair_object.data) == 1, "edit-mode link did not merge")
+    analyse(g, st, "links/editmode")
+
+
 def test_new_features():
     """Head setup, drawing helpers, presets (incl. curl) and bevel topology."""
     from toon_hair_studio import draw, core, presets
@@ -156,6 +216,8 @@ def test_new_features():
     st.tip_flip = 0.2
     build.rebuild(g)
     analyse(g, st, "roll+flip")
+
+    test_manual_links()
 
     # density layout puts more loops at bends and tips
     prm = core.StrandParams(length_segments=12, tip_bias=0.5, bend_density=1.0)

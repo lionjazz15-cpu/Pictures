@@ -432,7 +432,7 @@ class Lock:
 class Unit:
     """Everything grown from one guide spline: 1 lock, or N branched sub-locks
     (ordered by increasing azimuth). Sub-locks are joined up to branch_row."""
-    __slots__ = ("locks", "mid", "az", "mid_width", "order", "branch_row")
+    __slots__ = ("locks", "mid", "az", "mid_width", "order", "branch_row", "src", "mirrored")
 
     def __init__(self, locks, mid, az, mid_width, order, branch_row):
         # ordering / adjacency use the middle of the guide, not the root, so
@@ -443,6 +443,8 @@ class Unit:
         self.mid_width = mid_width
         self.order = order
         self.branch_row = branch_row
+        self.src = int(order)      # index of the guide spline
+        self.mirrored = False
 
 
 def _eval_at(samples, lengths, total, t):
@@ -730,6 +732,68 @@ def cluster_units(units, prm):
     return runs
 
 
+def manual_runs(units, links):
+    """Chains of units joined by manual links (spline a, spline b, t0, t1).
+
+    Returns [(units_in_order, {(i, i+1): (t0, t1)})]. Units not touched by a
+    link stay on their own. Links only join units of the same mirror side."""
+    by_key = {(u.src, u.mirrored): idx for idx, u in enumerate(units)}
+    parent = list(range(len(units)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    pair_range = {}
+    for a, b, t0, t1 in links:
+        for mir in (False, True):
+            ia, ib = by_key.get((a, mir)), by_key.get((b, mir))
+            if ia is None or ib is None or ia == ib:
+                continue
+            pair_range[frozenset((ia, ib))] = (t0, t1)
+            parent[find(ia)] = find(ib)
+    comps = {}
+    for idx in range(len(units)):
+        comps.setdefault(find(idx), []).append(idx)
+    runs = []
+    for members in comps.values():
+        seq = sorted(members, key=lambda i: units[i].az)
+        if len(seq) > 2:
+            gaps = [((units[seq[(j + 1) % len(seq)]].az - units[seq[j]].az) % 1.0, j) for j in range(len(seq))]
+            _g, j = max(gaps)
+            seq = seq[j + 1:] + seq[:j + 1]
+        # split the chain wherever two neighbours are not linked directly
+        cur = [seq[0]]
+        ranges = {}
+        for i in seq[1:]:
+            rng = pair_range.get(frozenset((cur[-1], i)))
+            if rng is None:
+                runs.append(([units[k] for k in cur], ranges))
+                cur, ranges = [i], {}
+            else:
+                ranges[len(cur) - 1] = rng
+                cur.append(i)
+        runs.append(([units[k] for k in cur], ranges))
+    return runs
+
+
+def _band_rows(a, b, t0, t1, rc):
+    """Rows of the join band [t0, t1] between two locks."""
+    r1 = -1
+    r0 = rc
+    for i in range(rc):
+        if a.ts[i] <= t1 + 1e-9 and b.ts[i] <= t1 + 1e-9:
+            r1 = i
+    for i in range(rc):
+        if a.ts[i] >= t0 - 1e-9 and b.ts[i] >= t0 - 1e-9:
+            r0 = i
+            break
+    if t0 <= 1e-6:
+        r0 = 0
+    return r0, r1
+
+
 def _lateral_row(a, b, split, rc):
     row = -1
     for i in range(rc):
@@ -742,7 +806,7 @@ def _lateral_row(a, b, split, rc):
 # sheet builder
 # --------------------------------------------------------------------------
 
-def build_sheet(locks, split_rows, center, prm, hair, outline=None):
+def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=None):
     """locks ordered by azimuth; split_rows[b] = last shared row between
     locks[b] and locks[b+1] (-1 = not shared).
 
@@ -787,6 +851,8 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
         # need at least two shared rows when the band does not start at the
         # root, otherwise the root-side and tip-side notches would meet in a
         # single (non-manifold) vertex
+        if start_rows is not None and b < len(start_rows):
+            start = max(start, start_rows[b])     # manual join band starts here
         if start > r1[b] or (start > 0 and r1[b] - start < 1):
             r1[b] = -1
             start = 0
@@ -1276,7 +1342,7 @@ def layer_defs(prm):
     return defs
 
 
-def build_group(spline_samples, center, prm, mirror=False, with_outline=True):
+def build_group(spline_samples, center, prm, mirror=False, with_outline=True, links=None):
     """spline_samples: list of sample lists -> (hair Geo, outline Geo|None).
 
     Each layer (middle / back / front) is built from the same guides and
@@ -1301,22 +1367,35 @@ def build_group(spline_samples, center, prm, mirror=False, with_outline=True):
                 for vs, mirrored, order in variants:
                     u = make_unit(vs, center, prm, mirrored, order, random.Random(seed), layer=layer)
                     if u:
+                        u.src, u.mirrored = n, mirrored
                         units.append(u)
             for u in units:
                 for lk in u.locks:
                     lk.unit = uid
                 uid += 1
-            for run in cluster_units(units, prm):
-                locks, rows = [], []
-                for u in run:
+            if links:
+                runs = manual_runs(units, links)       # manual joins win over auto
+            else:
+                runs = [(run, None) for run in cluster_units(units, prm)]
+            for run, ranges in runs:
+                locks, rows, starts = [], [], []
+                for ui, u in enumerate(run):
                     if locks:
                         rc = len(u.locks[0].frames) - (1 if prm.tip_mode == 'POINT' else 0)
-                        rows.append(_lateral_row(locks[-1], u.locks[0], prm.split, rc))
+                        if ranges is None:
+                            rows.append(_lateral_row(locks[-1], u.locks[0], prm.split, rc))
+                            starts.append(0)
+                        else:
+                            t0, t1 = ranges[ui - 1]
+                            r0, r1 = _band_rows(locks[-1], u.locks[0], t0, t1, rc)
+                            rows.append(r1)
+                            starts.append(r0)
                     for j, lk in enumerate(u.locks):
                         if j > 0:
                             rows.append(u.branch_row)
+                            starts.append(0)
                         locks.append(lk)
-                build_sheet(locks, rows, center, prm, hair, outline)
+                build_sheet(locks, rows, center, prm, hair, outline, start_rows=starts)
     finally:
         prm.width = base_width
     return hair, outline
