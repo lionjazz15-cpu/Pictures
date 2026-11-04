@@ -77,6 +77,7 @@ class Center:
         self.location = matrix.to_translation()
         ax = matrix.to_3x3() @ Vector((1.0, 0.0, 0.0))
         self.mirror_axis = ax.normalized() if ax.length > EPS else Vector((1.0, 0.0, 0.0))
+        self.radius = max(max(matrix.to_scale()), 1e-6)
 
     def radial(self, p):
         n = self.inv_t3 @ (self.inv @ p)
@@ -177,7 +178,7 @@ def resample(samples, segments, tip_bias=0.0):
     return out
 
 
-def compute_frames(points, center, twist=0.0, tilt_sign=1.0, smooth_passes=2):
+def compute_frames(points, center, twist=0.0, tilt_sign=1.0, smooth_passes=2, roll=0.0):
     """Head-oriented frames -> list of (P, T, N, B)."""
     P = [p[0] for p in points]
     n = len(P)
@@ -217,7 +218,7 @@ def compute_frames(points, center, twist=0.0, tilt_sign=1.0, smooth_passes=2):
 
     frames = []
     for i in range(n):
-        ang = points[i][2] * tilt_sign + twist * points[i][3]
+        ang = points[i][2] * tilt_sign + twist * points[i][3] + roll * tilt_sign
         Ni = N[i]
         if abs(ang) > 1e-6:
             Ni = Ni * math.cos(ang) + T[i].cross(Ni) * math.sin(ang)
@@ -242,27 +243,44 @@ def width_factor(t, root_ratio, bulge_pos, tip_shape, tip_min=0.0):
     return max(w, tip_min)
 
 
+CENTER_COLUMN_PROFILES = ('RIDGE', 'TRIANGLE')
+
+
 def profile_funcs(kind, curvature, thickness):
-    """Return (xs builder, mid(x), env(x)) for a cross-section type."""
+    """Return (mid(x), env(x), back_ratio) for a cross-section type.
+
+    mid: arch of the section's middle line, env: thickness envelope (0 at
+    the outer edges). back_ratio splits the thickness between the front
+    (2 - r) and the back (r): 1 = symmetric, 0 = flat back (half circle,
+    triangle)."""
     if kind == 'RIDGE':
         def mid(x):
             return curvature * (1.0 - abs(x))
     else:
         def mid(x):
             return curvature * (1.0 - x * x)
-    if kind == 'ROUND':
+    back = 1.0
+    if kind in ('ROUND', 'HALF'):
         def env(x):
             return math.sqrt(max(0.0, 1.0 - x * x))
-    elif kind == 'RIDGE':
+        if kind == 'HALF':
+            back = 0.0
+    elif kind in ('RIDGE', 'TRIANGLE'):
         def env(x):
             return 1.0 - abs(x)
+        if kind == 'TRIANGLE':
+            back = 0.0
+    elif kind == 'TRAPEZOID':
+        def env(x):
+            return min(1.0, (1.0 - abs(x)) / 0.4)
+        back = 0.25
     elif kind == 'FLAT':
         def env(x):
             return 1.0 - x ** 4
-    else:
+    else:  # LENS / CRESCENT
         def env(x):
             return 1.0 - x * x
-    return mid, env
+    return mid, env, back
 
 
 # --------------------------------------------------------------------------
@@ -353,6 +371,19 @@ class StrandParams:
     bevel = 0.3               # closed edges: side band height (fraction of thickness), 0 = knife edge
     # loop density (HairHarpy-style equidistribution)
     bend_density = 0.5
+    # volume / layering (sizes relative to the head radius R)
+    lift = 0.0                # push the whole group off the head
+    puff = 0.0                # bulge outward along the length
+    puff_pos = 0.6
+    tip_flip = 0.0            # >0 flicks tips outward, <0 tucks them in
+    roll = 0.0                # stand the locks up (rotate around the guide)
+    layers = 'NONE'           # NONE / FRONT / BACK / BOTH
+    layer_gap = 0.08
+    layer_shift = 0.5         # lateral stagger, fraction of the lock width
+    layer_front_len = 0.8
+    layer_back_len = 0.92
+    layer_width = 0.85
+    layer_flip = 0.12
     # curl / wave
     curl_turns = 0.0
     curl_radius = 0.5
@@ -504,23 +535,48 @@ def _layout(f, t0, t1, n, K=200):
     return out
 
 
-def deform_samples(samples, center, prm, tilt_sign=1.0, n=160):
-    """Curl (helix around the guide) and wave (side-to-side) deformation.
-    Returns a dense polyline; rows are then spread along the deformed path."""
+def _puff_bump(t, p):
+    """0 at the root and the tip, 1 at p."""
+    p = min(max(p, 0.05), 0.95)
+    if t <= p:
+        return math.sin(0.5 * math.pi * t / p) ** 2
+    return math.cos(0.5 * math.pi * (t - p) / (1.0 - p)) ** 2
+
+
+def deform_samples(samples, center, prm, tilt_sign=1.0, n=160, layer=None):
+    """Shape the guide: lift / puff / tip flip (along the head normal),
+    layer offset + stagger, curl (helix) and wave (side to side).
+
+    layer = (side, length, flip): side -1 back / +1 front, length cuts the
+    guide, flip adds to tip_flip. Returns a dense polyline; rows are then
+    spread along the deformed path."""
     curl = prm.curl_turns > 0.0 and prm.curl_radius > 0.0
     wave = prm.wave_amp > 0.0 and prm.wave_freq > 0.0
-    if not (curl or wave):
+    side, length, lflip = layer if layer else (0, 1.0, 0.0)
+    flip = prm.tip_flip + lflip
+    shaped = (prm.lift != 0.0 or prm.puff != 0.0 or flip != 0.0 or side != 0 or length < 0.999)
+    if not (curl or wave or shaped):
         return samples
     lengths, total = _arc(samples)
     if total < 1e-6:
         return samples
-    pts = [(*_eval_at(samples, lengths, total, i / n), i / n) for i in range(n + 1)]
+    tmax = min(max(length, 0.05), 1.0)
+    pts = [(*_eval_at(samples, lengths, total, tmax * i / n), i / n) for i in range(n + 1)]
     frames = compute_frames(pts, center, twist=0.0, tilt_sign=tilt_sign)
     W = prm.width
+    R = center.radius
     s0 = min(max(prm.curl_start, 0.0), 0.95)
     out = []
     for (p, rad, tilt, t), (_P, _T, N, B) in zip(pts, frames):
         off = Vector((0.0, 0.0, 0.0))
+        if shaped:
+            ramp = smoothstep(0.0, 0.15, t)        # roots stay on the scalp
+            h = prm.lift * ramp + prm.puff * _puff_bump(t, prm.puff_pos)
+            h += flip * smoothstep(0.55, 1.0, t) ** 2
+            h += side * prm.layer_gap * ramp
+            off += N * (h * R)
+            if side:
+                off += B * (side * prm.layer_shift * W)
         if curl:
             ramp = smoothstep(s0, min(1.0, s0 + 0.15), t)
             ph = 2.0 * math.pi * prm.curl_turns * max(0.0, t - s0) / (1.0 - s0)
@@ -532,7 +588,7 @@ def deform_samples(samples, center, prm, tilt_sign=1.0, n=160):
     return out
 
 
-def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None):
+def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=None):
     import random
     rng = rng or random.Random(0)
     if prm.root_extend > 0.0 and len(samples) >= 2:
@@ -541,7 +597,7 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None):
         if d.length > EPS:
             samples = [(p0 + d.normalized() * prm.root_extend, r0, t0)] + list(samples)
     tilt_sign = -1.0 if mirrored else 1.0
-    samples = deform_samples(samples, center, prm, tilt_sign)
+    samples = deform_samples(samples, center, prm, tilt_sign, layer=layer)
     lengths, total = _arc(samples)
     if total < 1e-6:
         return None
@@ -580,7 +636,7 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None):
     if nb == 1:
         tl = row_ts(1.0)
         pts = [(*_eval_at(samples, lengths, total, t), t) for t in tl]
-        frames = compute_frames(pts, center, twist=prm.twist, tilt_sign=tilt_sign)
+        frames = compute_frames(pts, center, twist=prm.twist, tilt_sign=tilt_sign, roll=prm.roll)
         widths = [parent_w(p[3], p[1]) for p in pts]
         P, _T, _N, B = frames[len(frames) // 3]
         lk = Lock(frames, widths, tl, _azimuth_rev(center, P, B, widths[len(frames) // 3]))
@@ -592,7 +648,7 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None):
     # parent frames on a fine grid, interpolated at any t
     fine = 64
     fpts = [(*_eval_at(samples, lengths, total, i / fine), i / fine) for i in range(fine + 1)]
-    fframes = compute_frames(fpts, center, twist=prm.twist, tilt_sign=tilt_sign)
+    fframes = compute_frames(fpts, center, twist=prm.twist, tilt_sign=tilt_sign, roll=prm.roll)
 
     def frame_at(t):
         f = min(max(t, 0.0), 1.0) * fine
@@ -640,7 +696,8 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None):
                 w = Wb / nb * width_factor(u, 1.0, 0.25, prm.tip_shape, tip_min)
             pts.append((P + B * off, rad, tilt, t))
             widths.append(w)
-        frames = compute_frames(pts, center, twist=0.0, tilt_sign=tilt_sign, smooth_passes=1)
+        frames = compute_frames(pts, center, twist=prm.twist, tilt_sign=tilt_sign, smooth_passes=1,
+                                roll=prm.roll)
         locks.append(Lock(frames, widths, tl, rev))
     if rev:
         locks.reverse()
@@ -696,12 +753,13 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
     K = len(locks)
     closed = prm.backface == 'CLOSED'
     S = max(1, prm.profile_segments)
-    if prm.profile == 'RIDGE' and S % 2:
+    if prm.profile in CENTER_COLUMN_PROFILES and S % 2:
         S += 1
     if closed and S < 2:
         S = 2
     xs = [-1.0 + 2.0 * j / S for j in range(S + 1)]
-    mid, env = profile_funcs(prm.profile, prm.curvature, prm.thickness)
+    mid, env, back_ratio = profile_funcs(prm.profile, prm.curvature, prm.thickness)
+    k_front, k_back = 2.0 - back_ratio, back_ratio
 
     nr = min(len(lk.frames) for lk in locks)
     point_tip = prm.tip_mode == 'POINT'
@@ -917,8 +975,8 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
                     # bevel: the outer edge keeps a small side band
                     ye = half_t * prm.bevel * wk[k]
                 if closed:
-                    put(key('F', k, i, c), base + N * (ym + ye), t, 0.0, rw)
-                    put(key('B', k, i, c), base + N * (ym - ye), t, 1.0, rw)
+                    put(key('F', k, i, c), base + N * (ym + ye * k_front), t, 0.0, rw)
+                    put(key('B', k, i, c), base + N * (ym - ye * k_back), t, 1.0, rw)
                 else:
                     put(key('F', k, i, c), base + N * ym, t, 0.0, rw)
     if point_tip:
@@ -1207,34 +1265,58 @@ def build_hull(g, vn, prm, closed):
 # public entry point
 # --------------------------------------------------------------------------
 
+def layer_defs(prm):
+    """(side, length, width scale, tip flip) for each generated layer:
+    the middle layer plus optional front (+1) / back (-1) layers."""
+    defs = [(0, 1.0, 1.0, 0.0)]
+    if prm.layers in ('BACK', 'BOTH'):
+        defs.append((-1, prm.layer_back_len, prm.layer_width, -prm.layer_flip))
+    if prm.layers in ('FRONT', 'BOTH'):
+        defs.append((1, prm.layer_front_len, prm.layer_width, prm.layer_flip))
+    return defs
+
+
 def build_group(spline_samples, center, prm, mirror=False, with_outline=True):
-    """spline_samples: list of sample lists -> (hair Geo, outline Geo|None)."""
+    """spline_samples: list of sample lists -> (hair Geo, outline Geo|None).
+
+    Each layer (middle / back / front) is built from the same guides and
+    joined laterally only within itself, so front and back layers overlap
+    the middle one like hand-made layered hair."""
     import random
     prm.density_profile = density_profile(spline_samples, prm)
-    units = []
-    for n, s in enumerate(spline_samples):
-        u = make_unit(s, center, prm, False, float(n), random.Random(prm.seed * 7919 + n * 2))
-        if u:
-            units.append(u)
-        if mirror:
-            ms = [(center.mirror(p), r, t) for p, r, t in s]
-            u = make_unit(ms, center, prm, True, n + 0.5, random.Random(prm.seed * 7919 + n * 2))
-            if u:
-                units.append(u)
     hair = Geo()
     outline = Geo() if (with_outline and prm.outline) else None
-    for uid, u in enumerate(units):
-        for lk in u.locks:
-            lk.unit = uid
-    for run in cluster_units(units, prm):
-        locks, rows = [], []
-        for u in run:
-            if locks:
-                rc = len(u.locks[0].frames) - (1 if prm.tip_mode == 'POINT' else 0)
-                rows.append(_lateral_row(locks[-1], u.locks[0], prm.split, rc))
-            for j, lk in enumerate(u.locks):
-                if j > 0:
-                    rows.append(u.branch_row)
-                locks.append(lk)
-        build_sheet(locks, rows, center, prm, hair, outline)
+    base_width = prm.width
+    uid = 0
+    try:
+        for li, (side, length, wscale, flip) in enumerate(layer_defs(prm)):
+            prm.width = base_width * wscale
+            layer = (side, length, flip) if side else None
+            units = []
+            for n, smp in enumerate(spline_samples):
+                seed = prm.seed * 7919 + n * 2 + li * 104729
+                variants = [(smp, False, float(n))]
+                if mirror:
+                    variants.append(([(center.mirror(p), r, t) for p, r, t in smp], True, n + 0.5))
+                for vs, mirrored, order in variants:
+                    u = make_unit(vs, center, prm, mirrored, order, random.Random(seed), layer=layer)
+                    if u:
+                        units.append(u)
+            for u in units:
+                for lk in u.locks:
+                    lk.unit = uid
+                uid += 1
+            for run in cluster_units(units, prm):
+                locks, rows = [], []
+                for u in run:
+                    if locks:
+                        rc = len(u.locks[0].frames) - (1 if prm.tip_mode == 'POINT' else 0)
+                        rows.append(_lateral_row(locks[-1], u.locks[0], prm.split, rc))
+                    for j, lk in enumerate(u.locks):
+                        if j > 0:
+                            rows.append(u.branch_row)
+                        locks.append(lk)
+                build_sheet(locks, rows, center, prm, hair, outline)
+    finally:
+        prm.width = base_width
     return hair, outline

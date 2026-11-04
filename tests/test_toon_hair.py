@@ -139,6 +139,24 @@ def test_new_features():
         if key == 'DRILL':
             check(len(st.hair_object.data.vertices) > 300, "curl preset too coarse")
 
+    # every section preset, with front/back layers, puff and tip flip
+    g = bpy.data.objects["Hair_BackVolume"]
+    st = g.toon_hair
+    for sec in th.SECTION_PRESETS:
+        for layers in ('BOTH', 'NONE'):
+            st.section_preset = sec
+            st.layers = layers
+            build.rebuild(g)
+            analyse(g, st, f"section/{sec}/{layers}")
+    st.layers = 'BOTH'
+    nb = len(st.hair_object.data.polygons)
+    st.layers = 'NONE'
+    check(len(st.hair_object.data.polygons) < nb, "layers did not add geometry")
+    st.roll = 1.2
+    st.tip_flip = 0.2
+    build.rebuild(g)
+    analyse(g, st, "roll+flip")
+
     # density layout puts more loops at bends and tips
     prm = core.StrandParams(length_segments=12, tip_bias=0.5, bend_density=1.0)
     f = [1.0] * 65
@@ -160,7 +178,7 @@ def main():
         st.outline = True
         for connect, bf, lod, prof, tip, br in itertools.product(
                 (False, True), ('CLOSED', 'FLIPPED', 'SINGLE'), ('LOW', 'MID', 'HIGH'),
-                ('LENS', 'RIDGE', 'ROUND'), ('POINT', 'BLUNT'), (1, 3)):
+                ('LENS', 'RIDGE', 'HALF'), ('POINT', 'BLUNT'), (1, 3)):
             th._suspend_update = True
             st.connect, st.backface, st.lod, st.profile, st.tip_mode = connect, bf, lod, prof, tip
             st.branches = br

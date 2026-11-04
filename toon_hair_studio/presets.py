@@ -18,6 +18,13 @@ PRESETS = {
         connect=True, split=0.7, connect_ratio=2.2,
         branches=2, branch_jitter=1, branch_pos=0.8, branch_spread=0.12,
         branch_length_var=0.45, branch_pattern='RANDOM')),
+    'BACK_VOLUME': ("後ろ髪(立体)", "Hair_BackVolume", 'MOD_SOLIDIFY', lambda R: dict(
+        width=R * 0.7, root_ratio=0.25, bulge_pos=0.5, tip_shape=1.8, thickness=0.35,
+        connect=True, split=0.72, connect_ratio=2.2,
+        branches=2, branch_jitter=1, branch_pos=0.8, branch_spread=0.15,
+        branch_length_var=0.45, branch_pattern='RANDOM',
+        layers='BOTH', layer_gap=0.09, layer_shift=0.5, layer_front_len=0.78, layer_back_len=0.92,
+        layer_width=0.8, layer_flip=0.14, puff=0.12, puff_pos=0.62, tip_flip=-0.06)),
     'SIDEBURN': ("もみあげ", "Hair_Sideburn", 'IPO_EASE_IN', lambda R: dict(
         width=R * 0.3, root_ratio=0.6, bulge_pos=0.4, tip_shape=1.5, mirror_x=True,
         branches=2, branch_pos=0.6, branch_spread=0.25, branch_length_var=0.3)),
@@ -34,7 +41,7 @@ PRESETS = {
     'CUSTOM': ("汎用", "Hair_Group", 'CURVE_BEZCURVE', lambda R: dict(width=R * 0.35)),
 }
 
-ORDER = ('BANGS', 'SIDE', 'BACK', 'SIDEBURN', 'AHOGE', 'TAIL', 'DRILL', 'CUSTOM')
+ORDER = ('BANGS', 'SIDE', 'BACK', 'BACK_VOLUME', 'SIDEBURN', 'AHOGE', 'TAIL', 'DRILL', 'CUSTOM')
 
 ITEMS = [(k, PRESETS[k][0], "", PRESETS[k][2], i) for i, k in enumerate(ORDER)]
 

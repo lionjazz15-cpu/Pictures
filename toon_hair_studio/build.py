@@ -22,6 +22,8 @@ PARAM_KEYS = (
     "branches", "branch_jitter", "branch_pos", "branch_spread", "branch_length_var",
     "branch_pattern", "seed", "connect_style", "smooth_iterations",
     "bevel", "bend_density", "curl_turns", "curl_radius", "curl_start", "wave_amp", "wave_freq",
+    "lift", "puff", "puff_pos", "tip_flip", "roll", "layers", "layer_gap", "layer_shift",
+    "layer_front_len", "layer_back_len", "layer_width", "layer_flip",
 )
 
 _building = False

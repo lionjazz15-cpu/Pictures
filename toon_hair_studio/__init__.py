@@ -46,6 +46,29 @@ def _upd(self, context):
         build.rebuild(ob)
 
 
+SECTION_PRESETS = {
+    # key: (label, description, profile, thickness, curvature, bevel)
+    'TUBE': ("筒", "円い断面の筒 (おさげ・縦ロール・太い束)", 'ROUND', 1.0, 0.0, 0.2),
+    'HALF': ("半円", "表が丸く裏が平ら (頭に沿う太い房)", 'HALF', 0.5, 0.0, 0.25),
+    'LENS': ("レンズ", "両端が鋭い定番のアニメ房", 'LENS', 0.25, 0.12, 0.3),
+    'CRESCENT': ("三日月", "強く反った薄い房", 'LENS', 0.2, 0.35, 0.3),
+    'RIDGE': ("山形", "中央に稜線のある房", 'RIDGE', 0.3, 0.15, 0.25),
+    'TRIANGLE': ("三角", "表が山形・裏が平ら", 'TRIANGLE', 0.45, 0.0, 0.2),
+    'TRAPEZOID': ("台形", "平らな面と斜めの肩", 'TRAPEZOID', 0.35, 0.05, 0.3),
+    'FLAT': ("板", "均一な厚みの板", 'FLAT', 0.15, 0.08, 0.5),
+}
+
+
+def _upd_section(self, context):
+    pr = SECTION_PRESETS.get(self.section_preset)
+    if pr:
+        with _suspended():
+            self.profile, self.thickness, self.curvature, self.bevel = pr[2:]
+            if self.backface != 'CLOSED':
+                self.backface = 'CLOSED'
+    _upd(self, context)
+
+
 LOD_TABLE = {
     'LOW': (6, 2),
     'MID': (12, 4),
@@ -113,9 +136,17 @@ class ToonHairSettings(bpy.types.PropertyGroup):
         name="断面",
         items=[('LENS', "レンズ", "両端が鋭い。アニメ髪の定番"),
                ('RIDGE', "山形", "中央に稜線。シャープな影とハイライト"),
-               ('ROUND', "丸", "ふっくら"),
+               ('ROUND', "丸/筒", "ふっくら。厚み1.0で筒"),
+               ('HALF', "半円", "表が丸く裏が平ら"),
+               ('TRIANGLE', "三角", "表が山形で裏が平ら"),
+               ('TRAPEZOID', "台形", "平らな面と斜めの肩"),
                ('FLAT', "板", "ほぼ均一の厚み")],
         default='LENS', update=_upd)
+    section_preset: EnumProperty(
+        name="断面プリセット",
+        items=[(k, v[0], v[1]) for k, v in SECTION_PRESETS.items()],
+        default='LENS', update=_upd_section,
+        description="断面の形・厚み・反り・ベベルをまとめて設定")
     backface: EnumProperty(
         name="裏面",
         items=[('CLOSED', "厚みあり", "閉じた立体。カリングON・アウトラインが最も安定"),
@@ -145,6 +176,33 @@ class ToonHairSettings(bpy.types.PropertyGroup):
     root_cap: BoolProperty(name="根元を閉じる", default=False, update=_upd)
     twist: FloatProperty(name="ねじれ", default=0.0, subtype='ANGLE', soft_min=-math.pi * 2,
                          soft_max=math.pi * 2, update=_upd)
+    # --- volume / layering ---
+    layers: EnumProperty(
+        name="重ね",
+        items=[('NONE', "なし", "1層"),
+               ('FRONT', "前に重ねる", "手前に1層 (短め・外ハネ)"),
+               ('BACK', "後ろに重ねる", "奥に1層 (内巻き)"),
+               ('BOTH', "前後に重ねる", "手前と奥に1層ずつ。立体的な束感")],
+        default='NONE', update=_upd,
+        description="同じカーブから手前/奥の層を自動で作り、少しずらして重ねる")
+    layer_gap: FloatProperty(name="層の間隔", default=0.08, min=0.0, soft_max=0.4, update=_upd,
+                             description="層どうしの前後の距離 (頭の半径比)")
+    layer_shift: FloatProperty(name="層の左右ずらし", default=0.5, soft_min=-1.0, soft_max=1.0, update=_upd,
+                               description="層を房の幅の何割ずらすか。つなぎ目を隠す")
+    layer_front_len: FloatProperty(name="前の層の長さ", default=0.8, min=0.1, max=1.0, update=_upd)
+    layer_back_len: FloatProperty(name="後ろの層の長さ", default=0.92, min=0.1, max=1.0, update=_upd)
+    layer_width: FloatProperty(name="重ねる層の幅", default=0.85, min=0.1, soft_max=2.0, update=_upd)
+    layer_flip: FloatProperty(name="層の毛先の開き", default=0.12, soft_min=-0.5, soft_max=0.5, update=_upd,
+                              description="前の層は外へ、後ろの層は内へ毛先を向ける量 (頭の半径比)")
+    puff: FloatProperty(name="ふくらみ", default=0.0, soft_min=-0.3, soft_max=0.6, update=_upd,
+                        description="房の途中を外へ膨らませる量 (頭の半径比)")
+    puff_pos: FloatProperty(name="ふくらみ位置", default=0.6, min=0.05, max=0.95, update=_upd)
+    tip_flip: FloatProperty(name="毛先 外ハネ/内巻き", default=0.0, soft_min=-0.5, soft_max=0.5, update=_upd,
+                            description="+で外ハネ、-で内巻き (頭の半径比)")
+    lift: FloatProperty(name="浮かせる", default=0.0, soft_min=-0.2, soft_max=0.5, update=_upd,
+                        description="グループ全体を頭から浮かせる量 (頭の半径比)。層を前後に重ねる時に")
+    roll: FloatProperty(name="向き(立てる)", default=0.0, subtype='ANGLE', soft_min=-math.pi, soft_max=math.pi,
+                        update=_upd, description="房を中心線のまわりに回して立てる (ひさし前髪・跳ね毛)")
     curl_turns: FloatProperty(name="カール回数", default=0.0, min=0.0, soft_max=8.0, update=_upd,
                               description="縦ロールのように房をらせん状に巻く回数")
     curl_radius: FloatProperty(name="カール半径", default=0.5, min=0.0, soft_max=2.0, update=_upd,
@@ -385,8 +443,9 @@ class TOONHAIR_OT_add_group(bpy.types.Operator):
         ob = draw.new_group(context, self.preset, center)
         # one starter strand from the crown over the front, to edit freely
         whorl = _head_dir(180, 72)
-        az = {'SIDE': 70, 'SIDEBURN': 85, 'BACK': 180, 'TAIL': 150, 'DRILL': 85}.get(self.preset, 0)
-        el = -60 if self.preset in {'SIDE', 'BACK', 'SIDEBURN', 'TAIL', 'DRILL'} else 10
+        az = {'SIDE': 70, 'SIDEBURN': 85, 'BACK': 180, 'BACK_VOLUME': 180, 'TAIL': 150,
+              'DRILL': 85}.get(self.preset, 0)
+        el = -60 if self.preset in {'SIDE', 'BACK', 'BACK_VOLUME', 'SIDEBURN', 'TAIL', 'DRILL'} else 10
         pts = _whorl_strand(center, whorl, az, el, 1.12, n=5, hang=0.6)
         inv = ob.matrix_world.inverted()
         _add_bezier(ob.data, [inv @ p for p in pts])
@@ -641,9 +700,11 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
             row.prop(st, "auto_update", text="", icon='FILE_REFRESH')
             col = box.column(align=True)
             col.row(align=True).prop(st, "lod", expand=True)
+            col.prop(st, "section_preset", text="断面")
             col.prop(st, "width")
             col.prop(st, "thickness")
             col.prop(st, "branches")
+            col.prop(st, "layers", text="重ね")
             row = col.row(align=True)
             row.prop(st, "connect", toggle=True)
             row.prop(st, "mirror_x", toggle=True)
@@ -721,6 +782,42 @@ class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
         sub.active = st.wave_amp > 0.0
         sub.prop(st, "wave_freq")
         lay.label(text="ヒント: 編集モードで Alt+S=部分的な幅, Ctrl+T=ねじり", icon='INFO')
+
+
+class TOONHAIR_PT_volume(_Panel, bpy.types.Panel):
+    bl_label = "立体 (重ね / ふくらみ)"
+    bl_parent_id = "TOONHAIR_PT_main"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return active_group(context) is not None
+
+    def draw(self, context):
+        st = active_group(context).toon_hair
+        lay = self.layout
+        lay.use_property_split = True
+        lay.use_property_decorate = False
+        lay.prop(st, "layers")
+        col = lay.column(align=True)
+        col.active = st.layers != 'NONE'
+        col.prop(st, "layer_gap")
+        col.prop(st, "layer_shift")
+        if st.layers in {'FRONT', 'BOTH'}:
+            col.prop(st, "layer_front_len")
+        if st.layers in {'BACK', 'BOTH'}:
+            col.prop(st, "layer_back_len")
+        col.prop(st, "layer_width")
+        col.prop(st, "layer_flip")
+        lay.separator()
+        col = lay.column(align=True)
+        col.prop(st, "puff")
+        sub = col.column(align=True)
+        sub.active = st.puff != 0.0
+        sub.prop(st, "puff_pos")
+        col.prop(st, "tip_flip")
+        col.prop(st, "lift")
+        col.prop(st, "roll")
 
 
 class TOONHAIR_PT_branch(_Panel, bpy.types.Panel):
@@ -875,6 +972,7 @@ classes = (
     TOONHAIR_OT_bake,
     TOONHAIR_PT_main,
     TOONHAIR_PT_shape,
+    TOONHAIR_PT_volume,
     TOONHAIR_PT_branch,
     TOONHAIR_PT_connect,
     TOONHAIR_PT_shading,
