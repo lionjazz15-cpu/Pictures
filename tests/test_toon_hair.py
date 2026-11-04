@@ -112,6 +112,59 @@ def islands(me):
     return len({find(i) for i in range(len(me.vertices))})
 
 
+def face_islands(me, cut_seams=True):
+    """Number of face islands when walking across edges that are not seams."""
+    seam = {tuple(sorted(e.vertices)) for e in me.edges if e.use_seam} if cut_seams else set()
+    edge_faces = {}
+    for p in me.polygons:
+        vs = list(p.vertices)
+        for a in range(len(vs)):
+            k = tuple(sorted((vs[a], vs[(a + 1) % len(vs)])))
+            if k not in seam:
+                edge_faces.setdefault(k, []).append(p.index)
+    parent = list(range(len(me.polygons)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for fs in edge_faces.values():
+        for f in fs[1:]:
+            parent[find(f)] = find(fs[0])
+    return len({find(i) for i in range(len(me.polygons))})
+
+
+def test_uv_seams():
+    """Front / back seams split every closed lock into two UV islands."""
+    for name in ("Hair_Bangs", "Hair_Back", "Hair_Ahoge"):
+        g = bpy.data.objects[name]
+        st = g.toon_hair
+        for bev in (0.3, 0.0):
+            st.backface = 'CLOSED'
+            st.bevel = bev
+            build.rebuild(g)
+            me = st.hair_object.data
+            n_seam = sum(1 for e in me.edges if e.use_seam)
+            parts = islands(me)
+            uv_isl = face_islands(me)
+            check(n_seam > 0, f"{name}: no seams")
+            check(uv_isl == 2 * parts, f"{name}/bevel{bev}: {uv_isl} uv islands for {parts} pieces (want 2 each)")
+        st.uv_seams = False
+        check(not any(e.use_seam for e in st.hair_object.data.edges), f"{name}: seams not cleared")
+        st.uv_seams = True
+    res = bpy.ops.toon_hair.bake('EXEC_DEFAULT', uv_mode='UNWRAP', name="Hair_Unwrapped")
+    ob = bpy.data.objects.get("Hair_Unwrapped")
+    check(res == {'FINISHED'} and ob is not None, "unwrap bake failed")
+    uv = ob.data.uv_layers.active.data
+    us = [d.uv.x for d in uv]
+    vs = [d.uv.y for d in uv]
+    check(min(us) >= -1e-4 and max(us) <= 1.0001 and min(vs) >= -1e-4 and max(vs) <= 1.0001,
+          "unwrapped UVs out of 0..1")
+    check(len({(round(d.uv.x, 4), round(d.uv.y, 4)) for d in uv}) > len(ob.data.vertices) // 4,
+          "unwrap produced degenerate UVs")
+
+
 def test_live_scope():
     """Unrelated depsgraph updates must not rebuild; manual hiding sticks."""
     g = bpy.data.objects["Hair_Bangs"]
@@ -283,6 +336,7 @@ def test_new_features():
     test_manual_links()
     test_pattsun()
     test_live_scope()
+    test_uv_seams()
 
     # density layout puts more loops at bends and tips
     prm = core.StrandParams(length_segments=12, tip_bias=0.5, bend_density=1.0)

@@ -113,6 +113,8 @@ class ToonHairLink(bpy.types.PropertyGroup):
 
 class ToonHairSettings(bpy.types.PropertyGroup):
     links: bpy.props.CollectionProperty(type=ToonHairLink)
+    uv_seams: BoolProperty(name="UVシーム", default=True, update=_upd,
+                           description="表面と裏面(+ベベル・ふた)の境目に自動でシームを入れる")
     enabled: BoolProperty(default=False)
     auto_update: BoolProperty(name="自動更新 Live", default=True,
                               description="カーブを編集したら即メッシュを再生成")
@@ -715,6 +717,11 @@ class TOONHAIR_OT_bake(bpy.types.Operator):
     with_outline: BoolProperty(name="アウトラインも出力", default=False,
                                description="MToon等のシェーダー側アウトラインを使うならOFF")
     name: bpy.props.StringProperty(name="名前", default="Hair_Baked")
+    uv_mode: EnumProperty(
+        name="UV",
+        items=[('STRIP', "房ごと 0〜1", "U=幅方向, V=根元→毛先。グラデーションテクスチャ向け (重なりあり)"),
+               ('UNWRAP', "シームで展開", "表/裏の自動シームで展開。テクスチャを描く人向け")],
+        default='STRIP')
 
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
@@ -730,6 +737,8 @@ class TOONHAIR_OT_bake(bpy.types.Operator):
             self.report({'WARNING'}, "毛束グループがありません")
             return {'CANCELLED'}
         ob, oob = build.bake(groups, self.name, self.with_outline, context.collection)
+        if self.uv_mode == 'UNWRAP':
+            build.unwrap(ob)
         proxy_groups = [g for g in groups if g.toon_hair.normal_mode == 'PROXY'
                         and g.toon_hair.normal_proxy is not None]
         if proxy_groups:
@@ -1005,7 +1014,7 @@ class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
 
 
 class TOONHAIR_PT_shading(_Panel, bpy.types.Panel):
-    bl_label = "法線 / マテリアル"
+    bl_label = "法線 / マテリアル / UV"
     bl_options = {'DEFAULT_CLOSED'}
     bl_parent_id = "TOONHAIR_PT_main"
 
@@ -1025,6 +1034,7 @@ class TOONHAIR_PT_shading(_Panel, bpy.types.Panel):
             lay.prop(st, "normal_proxy")
         lay.separator()
         lay.prop(st, "material")
+        lay.prop(st, "uv_seams")
 
 class TOONHAIR_PT_outline(_Panel, bpy.types.Panel):
     bl_label = "アウトライン"

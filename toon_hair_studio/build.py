@@ -125,9 +125,21 @@ def _vec_attr(me, name, values):
     a.data.foreach_set("vector", flat)
 
 
-def write_mesh(me, geo, custom_normals=True):
+def write_mesh(me, geo, custom_normals=True, seams=False):
     me.clear_geometry()
     me.from_pydata([v[:] for v in geo.verts], [], geo.faces)
+
+    if seams and len(me.edges):
+        cut = geo.seam_edges()
+        flags = [False] * len(me.edges)
+        if cut:
+            vs = [0] * (2 * len(me.edges))
+            me.edges.foreach_get("vertices", vs)
+            for i in range(len(me.edges)):
+                a, b = vs[2 * i], vs[2 * i + 1]
+                if ((a, b) if a < b else (b, a)) in cut:
+                    flags[i] = True
+        me.edges.foreach_set("use_seam", flags)
 
     if len(me.loops):
         uvl = me.uv_layers.get("UVMap") or me.uv_layers.new(name="UVMap")
@@ -242,7 +254,7 @@ def rebuild(curve_ob):
         hair, outline = generate(curve_ob, world=False)
 
         hob = st.hair_object
-        write_mesh(hob.data, hair, custom_normals=st.normal_mode == 'VOLUME')
+        write_mesh(hob.data, hair, custom_normals=st.normal_mode == 'VOLUME', seams=st.uv_seams)
         write_vertex_groups(hob, hair)
         _assign_material(hob.data, st.material)
         _sync_proxy_modifier(hob, st)
@@ -329,6 +341,27 @@ def rebuild_all(only_center=None):
             rebuild(ob)
 
 
+def unwrap(ob, margin=0.01):
+    """UV-unwrap a mesh object along its seams (angle based) into UVMap."""
+    ctx = bpy.context
+    prev_active = ctx.view_layer.objects.active
+    prev_sel = [o for o in ctx.selected_objects]
+    for o in prev_sel:
+        o.select_set(False)
+    ob.select_set(True)
+    ctx.view_layer.objects.active = ob
+    try:
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=margin)
+    finally:
+        bpy.ops.object.mode_set(mode='OBJECT')
+        ob.select_set(False)
+        for o in prev_sel:
+            o.select_set(True)
+        ctx.view_layer.objects.active = prev_active
+
+
 def bake(groups, name="Hair_Baked", with_outline=False, collection=None):
     """Merge groups into one standalone mesh (world space) for export."""
     hair = core.Geo()
@@ -347,7 +380,8 @@ def bake(groups, name="Hair_Baked", with_outline=False, collection=None):
 
     collection = collection or bpy.context.scene.collection
     me = bpy.data.meshes.new(name)
-    write_mesh(me, hair, custom_normals=any(g.toon_hair.normal_mode == 'VOLUME' for g in groups))
+    write_mesh(me, hair, custom_normals=any(g.toon_hair.normal_mode == 'VOLUME' for g in groups),
+               seams=True)
     for m in mats:
         me.materials.append(m)
     me.polygons.foreach_set("material_index", face_mats)

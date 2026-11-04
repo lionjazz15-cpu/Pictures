@@ -299,6 +299,7 @@ class Geo:
         self.verts = []
         self.faces = []
         self.face_uv = []      # per face: tuple of (u, v) per corner
+        self.face_kind = []    # per face: 'F' front, 'B' back, 'S' side band / cap / wall
         self.t = []            # root -> tip 0..1
         self.inner = []        # 1 = inner / back side
         self.head = []         # (azimuth, height, t)
@@ -309,6 +310,7 @@ class Geo:
         self.verts += other.verts
         self.faces += [tuple(i + off for i in f) for f in other.faces]
         self.face_uv += other.face_uv
+        self.face_kind += other.face_kind
         self.t += other.t
         self.inner += other.inner
         self.head += other.head
@@ -323,9 +325,21 @@ class Geo:
         self.verts = [matrix @ v for v in self.verts]
         self.normals = [(nm @ n).normalized() for n in self.normals]
 
-    def add_face(self, f, uv):
+    def add_face(self, f, uv, kind='S'):
         self.faces.append(tuple(f))
         self.face_uv.append(tuple(uv))
+        self.face_kind.append(kind)
+
+    def seam_edges(self):
+        """Edges between the front surface and everything else (back, bevel
+        bands, caps, walls): cutting there unwraps the front as one island
+        and the back (+ bands) as another."""
+        kinds = {}
+        for f, kind in zip(self.faces, self.face_kind):
+            for a in range(len(f)):
+                u, v = f[a], f[(a + 1) % len(f)]
+                kinds.setdefault((u, v) if u < v else (v, u), set()).add(kind)
+        return {e for e, ks in kinds.items() if 'F' in ks and len(ks) > 1}
 
     def vertex_normals(self):
         acc = [Vector((0.0, 0.0, 0.0)) for _ in self.verts]
@@ -1110,10 +1124,10 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
                 ca, cb = cols[j], cols[j + 1]
                 ua, ub = us[j], us[j + 1]
                 g.add_face((V('F', k, i, ca), V('F', k, i, cb), V('F', k, i + 1, cb), V('F', k, i + 1, ca)),
-                           ((ua, v0), (ub, v0), (ub, v1), (ua, v1)))
+                           ((ua, v0), (ub, v0), (ub, v1), (ua, v1)), 'F')
                 if closed:
                     g.add_face((V('B', k, i, cb), V('B', k, i, ca), V('B', k, i + 1, ca), V('B', k, i + 1, cb)),
-                               ((ub, v0), (ua, v0), (ua, v1), (ub, v1)))
+                               ((ub, v0), (ua, v0), (ua, v1), (ub, v1)), 'B')
             if bevel:
                 # bevel band along each outer (not joined) edge
                 for c, u in ((0, 0.0), (S, 1.0)):
@@ -1123,17 +1137,18 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
                         g.add_face(f, [(u, v0), (u, v1), (u, v1), (u, v0)])
         i = rc - 1
         vt = ts[i]
-        loop = [(V('F', k, i, cols[j]), us[j]) for j in range(S + 1)]
+        loop = [(V('F', k, i, cols[j]), us[j], 'F') for j in range(S + 1)]
         if closed:
             back = range(S, -1, -1) if bevel else range(S - 1, 0, -1)
-            loop += [(V('B', k, i, cols[j]), us[j]) for j in back]
+            loop += [(V('B', k, i, cols[j]), us[j], 'B') for j in back]
         if point_tip:
             tip = index[('T', k)]
             span = len(loop) if closed else len(loop) - 1
             for j in range(span):
-                a, ua = loop[j]
-                b, ub = loop[(j + 1) % len(loop)]
-                g.add_face((a, b, tip), ((ua, vt), (ub, vt), (0.5, ts[nr - 1])))
+                a, ua, sa = loop[j]
+                b, ub, sb = loop[(j + 1) % len(loop)]
+                kind = 'F' if sa == sb == 'F' else ('B' if sa == sb == 'B' else 'S')
+                g.add_face((a, b, tip), ((ua, vt), (ub, vt), (0.5, ts[nr - 1])), kind)
         elif closed:
             band_faces.extend(cap_strip(k, i))
 
@@ -1205,7 +1220,7 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
             g.head.append(g.head[idx])
         g.normals = normals + [-n for n in normals]
         for f, uv in zip(faces, fuv):
-            g.add_face([q + nv for q in reversed(f)], list(reversed(uv)))
+            g.add_face([q + nv for q in reversed(f)], list(reversed(uv)), 'B')
 
     hair.extend(g)
 
