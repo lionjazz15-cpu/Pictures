@@ -101,6 +101,7 @@ def main():
             th._suspend_update = True
             st.connect, st.backface, st.lod, st.profile, st.tip_mode = connect, bf, lod, prof, tip
             st.branches = br
+            st.connect_style = 'GROOVE' if prof == 'RIDGE' else 'SMOOTH'
             st.normal_mode = 'NONE' if lod == 'HIGH' else 'VOLUME'
             th._suspend_update = False
             st.length_segments, st.profile_segments = th.LOD_TABLE[lod]

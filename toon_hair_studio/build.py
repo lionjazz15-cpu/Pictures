@@ -20,7 +20,7 @@ PARAM_KEYS = (
     "outline_tip_ratio", "outline_taper_start",
     "connect", "connect_ratio", "split", "notch_soft", "seam_thickness", "order",
     "branches", "branch_jitter", "branch_pos", "branch_spread", "branch_length_var",
-    "branch_pattern", "seed",
+    "branch_pattern", "seed", "connect_style", "smooth_iterations",
 )
 
 _building = False

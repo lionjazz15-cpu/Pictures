@@ -164,6 +164,13 @@ class ToonHairSettings(bpy.types.PropertyGroup):
         items=[('AZIMUTH', "頭の周り順", "根元の方位角で自動ソート"),
                ('CURVE', "カーブ順", "スプラインを作った順")],
         default='AZIMUTH', update=_upd)
+    connect_style: EnumProperty(
+        name="連結スタイル",
+        items=[('SMOOTH', "なめらか", "隣の房と段差なく1枚の面としてつなぐ (反り・厚みをつなぎ目で平らにし、曲線補間+スムージング)"),
+               ('GROOVE', "毛束感(溝)", "房ごとに反りを残し、つなぎ目に溝を入れる")],
+        default='SMOOTH', update=_upd)
+    smooth_iterations: IntProperty(name="なめらかさ", default=4, min=0, max=20, update=_upd,
+                                   description="連結部分にかける縮まないスムージング(Taubin)の回数")
     connect_ratio: FloatProperty(name="連結する距離", default=1.8, min=0.1, soft_max=6.0, update=_upd,
                                  description="房の中間地点同士がこの距離(幅比)以内ならつなぐ。離れていれば別の塊になる")
     split: FloatProperty(name="切れ込み位置", default=0.55, min=0.0, max=1.0, update=_upd,
@@ -669,9 +676,6 @@ class TOONHAIR_PT_branch(_Panel, bpy.types.Panel):
         col.prop(st, "branch_pattern")
         col.prop(st, "seed")
         col.prop(st, "notch_soft")
-        sub = col.column()
-        sub.enabled = st.backface == 'CLOSED'
-        sub.prop(st, "seam_thickness")
 
 
 class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
@@ -691,13 +695,17 @@ class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
         lay.use_property_split = True
         lay.use_property_decorate = False
         lay.active = st.connect
+        lay.prop(st, "connect_style", expand=True)
+        if st.connect_style == 'SMOOTH':
+            lay.prop(st, "smooth_iterations")
         lay.prop(st, "order")
         lay.prop(st, "connect_ratio")
         lay.prop(st, "split")
         lay.prop(st, "notch_soft")
-        sub = lay.column()
-        sub.enabled = st.backface == 'CLOSED'
-        sub.prop(st, "seam_thickness")
+        if st.connect_style == 'GROOVE':
+            sub = lay.column()
+            sub.enabled = st.backface == 'CLOSED'
+            sub.prop(st, "seam_thickness")
 
 
 class TOONHAIR_PT_shading(_Panel, bpy.types.Panel):

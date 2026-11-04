@@ -348,6 +348,8 @@ class StrandParams:
     notch_soft = 0.5
     seam_thickness = 0.6
     order = 'AZIMUTH'         # AZIMUTH / CURVE
+    connect_style = 'SMOOTH'  # SMOOTH (なめらか) / GROOVE (毛束の溝)
+    smooth_iterations = 4
     # branching (分岐毛)
     branches = 1
     branch_jitter = 0
@@ -375,13 +377,16 @@ def _azimuth_rev(center, P, B, w):
 
 class Lock:
     """One pointed lock: rings of frames + widths + arc params."""
-    __slots__ = ("frames", "widths", "ts", "rev")
+    __slots__ = ("frames", "widths", "ts", "rev", "unit", "sub", "nsub")
 
     def __init__(self, frames, widths, ts, rev):
         self.frames = frames
         self.widths = widths
         self.ts = ts
         self.rev = rev
+        self.unit = 0       # id of the guide (Unit) this lock grew from
+        self.sub = 0        # index among its branch siblings (order space)
+        self.nsub = 1
 
 
 class Unit:
@@ -453,9 +458,24 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None):
     def parent_w(t, rad):
         return prm.width * width_factor(t, prm.root_ratio, prm.bulge_pos, prm.tip_shape, tip_min) * max(rad, 0.0)
 
+    tb = min(max(prm.branch_pos, 0.05), 0.9)
+    n_pre = min(max(int(round(tb * segs)), 1), segs - 2) if segs >= 4 else 1
+    n_post = segs - n_pre
+    # every guide of a group that may branch uses the same row layout
+    # (uniform up to the branch point, tip-biased after it), so rows line up
+    # across laterally joined guides whether or not each one branches
+    branchy = segs >= 4 and (prm.branches > 1 or prm.branch_jitter > 0)
+
+    def row_ts(t_end):
+        if not branchy:
+            return [1.0 - (1.0 - i / segs) ** bias for i in range(segs + 1)]
+        tl = [tb * i / n_pre for i in range(n_pre + 1)]
+        tl += [tb + (t_end - tb) * (1.0 - (1.0 - m / n_post) ** bias) for m in range(1, n_post + 1)]
+        return tl
+
     # ---- single lock -------------------------------------------------------
     if nb == 1:
-        tl = [1.0 - (1.0 - i / segs) ** bias for i in range(segs + 1)]
+        tl = row_ts(1.0)
         pts = [(*_eval_at(samples, lengths, total, t), t) for t in tl]
         frames = compute_frames(pts, center, twist=prm.twist, tilt_sign=tilt_sign)
         widths = [parent_w(p[3], p[1]) for p in pts]
@@ -466,9 +486,6 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None):
         return Unit([lk], Pm, center.head_coord(Pm)[0], widths[im], order, -1)
 
     # ---- branched lock -------------------------------------------------------
-    tb = min(max(prm.branch_pos, 0.05), 0.9)
-    n_pre = min(max(int(round(tb * segs)), 1), segs - 2)
-    n_post = segs - n_pre
     # parent frames on a fine grid, interpolated at any t
     fine = 64
     fpts = [(*_eval_at(samples, lengths, total, i / fine), i / fine) for i in range(fine + 1)]
@@ -506,8 +523,7 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None):
         # and every branch keeps at least 35% of it
         t_end = 1.0 - min(var, 0.65) * f * (1.0 - tb)
         blen = (t_end - tb) / (1.0 - tb)
-        tl = [tb * i / n_pre for i in range(n_pre + 1)]
-        tl += [tb + (t_end - tb) * (1.0 - (1.0 - m / n_post) ** bias) for m in range(1, n_post + 1)]
+        tl = row_ts(t_end)
         pts, widths = [], []
         for t in tl:
             P, B, rad, tilt = frame_at(t)
@@ -525,6 +541,8 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None):
         locks.append(Lock(frames, widths, tl, rev))
     if rev:
         locks.reverse()
+    for idx, lk in enumerate(locks):
+        lk.sub, lk.nsub = idx, len(locks)
     Pm, _Bm, radm, _ = frame_at(0.5)
     return Unit(locks, Pm, center.head_coord(Pm)[0], parent_w(0.5, radm), order, n_pre)
 
@@ -587,8 +605,13 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
     rc = nr - 1 if point_tip else nr
     r1 = [min(r, rc - 2) for r in split_rows]
     r0 = []
+    smooth_lat = prm.connect_style == 'SMOOTH'
     for b in range(K - 1):
         la, lb = locks[b], locks[b + 1]
+        # smooth joins place the seam on a curve through the lock centres, so
+        # they only need the centres in order; chord (groove) joins need the
+        # locks to actually sit side by side
+        min_sep = 0.08 if (smooth_lat or la.unit == lb.unit) else 0.35
         start = r1[b] + 1
         for i in range(r1[b], -1, -1):
             Pa, _Ta, _Na, Ba = la.frames[i]
@@ -597,7 +620,7 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
             if d.length < EPS:
                 break
             sep = (Pb - Pa).dot(d.normalized())
-            if sep < 0.35 * 0.5 * (la.widths[i] + lb.widths[i]):
+            if sep < min_sep * 0.5 * (la.widths[i] + lb.widths[i]):
                 break
             start = i
         # need at least two shared rows when the band does not start at the
@@ -633,6 +656,17 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
         span = max((tt(rc - 1) - t0) * prm.notch_soft, 1e-4)
         return smoothstep(t0, t0 + span, tt(i))
 
+    same_unit = [locks[b].unit == locks[b + 1].unit for b in range(K - 1)]
+    # branch siblings always join smoothly (they are one lock before the
+    # branch point); lateral joins are smooth or grooved by style
+    smooth_b = [same_unit[b] or smooth_lat for b in range(K - 1)]
+
+    def bw(b, i):
+        """merge weight of boundary b at row i (1 = fully joined)."""
+        if b < 0 or b >= K - 1 or r1[b] < 0:
+            return 0.0
+        return 1.0 - notch(b, i)
+
     # ---- edges in order space ------------------------------------------------
     oL = [[None] * rc for _ in range(K)]
     oR = [[None] * rc for _ in range(K)]
@@ -649,16 +683,23 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
     for b in range(K - 1):
         la, lb = locks[b], locks[b + 1]
         for i in range(rc):
-            # shared boundary: sweep left -> right and split the span from this
-            # lock's (already resolved) left edge to the neighbour's right edge
-            # by width ratio. Keeps every lock's edges in order, so the sheet
-            # never folds even where roots converge at the crown.
             wa, wb = la.widths[i], lb.widths[i]
             f = wa / (wa + wb) if wa + wb > EPS else 0.5
-            m = eL[b][i].lerp(oR[b + 1][i], f)
-            s = notch(b, i)
-            eR[b][i] = m.lerp(oR[b][i], s)
-            eL[b + 1][i] = m.lerp(oL[b + 1][i], s)
+            if smooth_b[b] and i >= r0[b]:
+                # smooth: boundary on a Catmull-Rom curve through the lock
+                # centres, so it follows the head instead of sagging on a chord
+                Pa, Pb = la.frames[i][0], lb.frames[i][0]
+                A0 = locks[b - 1].frames[i][0] if b > 0 and bw(b - 1, i) > 0 else Pa * 2.0 - Pb
+                A3 = locks[b + 2].frames[i][0] if b + 2 < K and bw(b + 1, i) > 0 else Pb * 2.0 - Pa
+                m = _catmull(A0, Pa, Pb, A3, f)
+            else:
+                # sweep left -> right and split the span from this lock's
+                # (already resolved) left edge to the neighbour's right edge by
+                # width ratio: never folds even where locks overlap
+                m = eL[b][i].lerp(oR[b + 1][i], f)
+            s_ = notch(b, i)
+            eR[b][i] = m.lerp(oR[b][i], s_)
+            eL[b + 1][i] = m.lerp(oL[b + 1][i], s_)
 
     def is_shared_col(k, i, c):
         return (c == 0 and left_shared(k, i)) or (c == S and right_shared(k, i))
@@ -673,8 +714,9 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
     acc = {}
     order = []
     meta = {}
+    relax_w = {}
 
-    def put(kk, co, t, inner):
+    def put(kk, co, t, inner, rw=0.0):
         if kk in acc:
             acc[kk][0] += co
             acc[kk][1] += 1
@@ -682,32 +724,94 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
             acc[kk] = [co.copy(), 1]
             order.append(kk)
             meta[kk] = (t, inner)
+        relax_w[kk] = max(relax_w.get(kk, 0.0), rw)
 
     g_seam = prm.seam_thickness
+    mid0 = mid(0.0)
+    half_t = 0.5 * prm.thickness
 
-    def env_at(k, i, c, x):
-        e = env(x)
-        if (left_shared(k, i) and c * 2 <= S) or (right_shared(k, i) and c * 2 >= S):
-            e = g_seam + (1.0 - g_seam) * e
-        return e
+    def prof(xx, W, W_nb_l, W_nb_r, wl, wr):
+        """(mid offset, half thickness) for profile coordinate xx in a span
+        of width W whose left/right lateral joins have weights wl / wr."""
+        e = env(xx)
+        mm = mid(xx)
+        wlat = wl if xx < 0.0 else wr
+        if wlat > 0.0:
+            if smooth_lat:
+                e += (1.0 - e) * wlat           # full thickness at the seam
+                mm += (mid0 - mm) * wlat        # no arch dip at the seam
+                W_nb = W_nb_l if xx < 0.0 else W_nb_r
+                W = W + (0.5 * (W + W_nb) - W) * abs(xx) * wlat
+            else:
+                e += (g_seam + (1.0 - g_seam) * e - e) * wlat
+        return mm * W, half_t * e * W
 
+    unit_locks = {}
     for k, lk in enumerate(locks):
-        for i in range(rc):
-            N = lk.frames[i][2]
+        unit_locks.setdefault(lk.unit, []).append(k)
+
+    for i in range(rc):
+        wk = [(eR[k][i] - eL[k][i]).length for k in range(K)]
+        Wu = {u: sum(wk[k] for k in ks) for u, ks in unit_locks.items()}
+        for k, lk in enumerate(locks):
+            P, _T, Nk, _B = lk.frames[i]
             L, R = eL[k][i], eR[k][i]
-            w = (R - L).length
             t = lk.ts[i]
+            ks = unit_locks[lk.unit]
+            kf, kl = ks[0], ks[-1]
+            # lateral join weights (own span / unit span)
+            lat_l = bw(k - 1, i) if k > 0 and not same_unit[k - 1] else 0.0
+            lat_r = bw(k, i) if k < K - 1 and not same_unit[k] else 0.0
+            ulat_l = bw(kf - 1, i) if kf > 0 else 0.0
+            ulat_r = bw(kl, i) if kl < K - 1 else 0.0
+            wnb_l = wk[k - 1] if k > 0 else wk[k]
+            wnb_r = wk[k + 1] if k < K - 1 else wk[k]
+            Wnb_l = Wu[locks[kf - 1].unit] if kf > 0 else Wu[lk.unit]
+            Wnb_r = Wu[locks[kl + 1].unit] if kl < K - 1 else Wu[lk.unit]
+            # branch join weights -> blend own profile with the unit profile
+            if lk.nsub > 1:
+                bl = bw(k - 1, i) if k > kf else None
+                br = bw(k, i) if k < kl else None
+                bl = br if bl is None else bl
+                br = bl if br is None else br
+            else:
+                bl = br = 1.0
+            # smooth-join weights for the base curve and the normal
+            sl = bw(k - 1, i) if k > 0 and smooth_b[k - 1] else 0.0
+            sr = bw(k, i) if k < K - 1 and smooth_b[k] else 0.0
+            nl = bw(k - 1, i) if k > 0 else 0.0
+            nr_ = bw(k, i) if k < K - 1 else 0.0
+            A_l = L * 2.0 - P
+            if k > 0 and sl > 0.0:
+                A_l = A_l.lerp(locks[k - 1].frames[i][0], sl)
+            A_r = R * 2.0 - P
+            if k < K - 1 and sr > 0.0:
+                A_r = A_r.lerp(locks[k + 1].frames[i][0], sr)
+            N_l = (Nk + locks[k - 1].frames[i][2]).normalized() if k > 0 else Nk
+            N_r = (Nk + locks[k + 1].frames[i][2]).normalized() if k < K - 1 else Nk
+            rw = max(ulat_l, ulat_r) if smooth_lat else 0.0
             for c in range(S + 1):
                 x = xs[c]
-                base = L.lerp(R, (x + 1.0) * 0.5)
-                ym = mid(x) * w
-                if closed:
-                    ye = 0.5 * prm.thickness * env_at(k, i, c, x) * w
-                    put(key('F', k, i, c), base + N * (ym + ye), t, 0.0)
-                    put(key('B', k, i, c), base + N * (ym - ye), t, 1.0)
+                if x < 0.0:
+                    base = _catmull(A_l, L, P, R, x + 1.0)
+                    N = Nk.lerp(N_l, -x * nl)
                 else:
-                    put(key('F', k, i, c), base + N * ym, t, 0.0)
-        if point_tip:
+                    base = _catmull(L, P, R, A_r, x)
+                    N = Nk.lerp(N_r, x * nr_)
+                N = N.normalized() if N.length > EPS else Nk
+                my_o, he_o = prof(x, wk[k], wnb_l, wnb_r, lat_l, lat_r)
+                xu = -1.0 + (2.0 * lk.sub + x + 1.0) / lk.nsub
+                my_u, he_u = prof(xu, Wu[lk.unit], Wnb_l, Wnb_r, ulat_l, ulat_r)
+                wbv = bl + (br - bl) * (x + 1.0) * 0.5
+                ym = my_o + (my_u - my_o) * wbv
+                ye = he_o + (he_u - he_o) * wbv
+                if closed:
+                    put(key('F', k, i, c), base + N * (ym + ye), t, 0.0, rw)
+                    put(key('B', k, i, c), base + N * (ym - ye), t, 1.0, rw)
+                else:
+                    put(key('F', k, i, c), base + N * ym, t, 0.0, rw)
+    if point_tip:
+        for k, lk in enumerate(locks):
             put(('T', k), lk.frames[nr - 1][0], lk.ts[nr - 1], 0.0)
 
     g = Geo()
@@ -794,6 +898,11 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
             g.add_face(ring, [(0.5, 0.0)] * len(ring))
             start = k + 1
 
+    # ---- smooth lateral joins: shrink-free Taubin relaxation -----------------
+    if smooth_lat and prm.smooth_iterations > 0 and any(w > 0.0 for w in relax_w.values()):
+        _relax(g, [relax_w.get(kk, 0.0) if kk[0] in ('F', 'B') else 0.0 for kk in order],
+               prm.smooth_iterations)
+
     # ---- normals ---------------------------------------------------------------
     raw = g.vertex_normals()
     geo_n = []
@@ -827,6 +936,43 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None):
             g.add_face([q + nv for q in reversed(f)], list(reversed(uv)))
 
     hair.extend(g)
+
+
+def _relax(g, weights, iterations, lam=0.5, mu=-0.53):
+    """Taubin smoothing (no shrinking). Vertices on open borders, tips and
+    walls (triangles / notch quads) stay fixed; weights scale the motion."""
+    nv = len(g.verts)
+    nbrs = [set() for _ in range(nv)]
+    edge_use = {}
+    fixed = set()
+    for f in g.faces:
+        k = len(f)
+        for a in range(k):
+            u, v = f[a], f[(a + 1) % k]
+            nbrs[u].add(v)
+            nbrs[v].add(u)
+            e = (u, v) if u < v else (v, u)
+            edge_use[e] = edge_use.get(e, 0) + 1
+        if k == 3:
+            fixed.update(f)
+    for (u, v), n in edge_use.items():
+        if n == 1:
+            fixed.add(u)
+            fixed.add(v)
+    movable = [i for i in range(nv) if weights[i] > 0.0 and i not in fixed and len(nbrs[i]) >= 3]
+    if not movable:
+        return
+    for _ in range(iterations):
+        for factor in (lam, mu):
+            new = {}
+            for i in movable:
+                avg = Vector((0.0, 0.0, 0.0))
+                for j in nbrs[i]:
+                    avg += g.verts[j]
+                avg /= len(nbrs[i])
+                new[i] = g.verts[i] + (avg - g.verts[i]) * (factor * weights[i])
+            for i, co in new.items():
+                g.verts[i] = co
 
 
 def build_hull(g, vn, prm, closed):
@@ -906,6 +1052,9 @@ def build_group(spline_samples, center, prm, mirror=False, with_outline=True):
                 units.append(u)
     hair = Geo()
     outline = Geo() if (with_outline and prm.outline) else None
+    for uid, u in enumerate(units):
+        for lk in u.locks:
+            lk.unit = uid
     for run in cluster_units(units, prm):
         locks, rows = [], []
         for u in run:
