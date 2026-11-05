@@ -300,6 +300,7 @@ class Geo:
         self.faces = []
         self.face_uv = []      # per face: tuple of (u, v) per corner
         self.face_kind = []    # per face: 'F' front, 'B' back, 'S' side band / cap / wall
+        self.face_mat = []     # per face: material slot
         self.t = []            # root -> tip 0..1
         self.inner = []        # 1 = inner / back side
         self.head = []         # (azimuth, height, t)
@@ -311,6 +312,7 @@ class Geo:
         self.faces += [tuple(i + off for i in f) for f in other.faces]
         self.face_uv += other.face_uv
         self.face_kind += other.face_kind
+        self.face_mat += other.face_mat
         self.t += other.t
         self.inner += other.inner
         self.head += other.head
@@ -325,10 +327,11 @@ class Geo:
         self.verts = [matrix @ v for v in self.verts]
         self.normals = [(nm @ n).normalized() for n in self.normals]
 
-    def add_face(self, f, uv, kind='S'):
+    def add_face(self, f, uv, kind='S', mat=0):
         self.faces.append(tuple(f))
         self.face_uv.append(tuple(uv))
         self.face_kind.append(kind)
+        self.face_mat.append(mat)
 
     def seam_edges(self):
         """Edges between the front surface and everything else (back, bevel
@@ -386,6 +389,7 @@ class StrandParams:
     seam_thickness = 0.6
     order = 'AZIMUTH'         # AZIMUTH / CURVE
     connect_style = 'SMOOTH'  # SMOOTH (なめらか) / GROOVE (毛束の溝)
+    plane_rows = True         # joined guides share row planes (HairHarpy-style)
     smooth_iterations = 4
     cut_taper = 0.05          # 'CUT' tips: narrowing towards the hem
     cut_enable = False        # trim every guide at a horizontal plane
@@ -454,7 +458,8 @@ class Lock:
 class Unit:
     """Everything grown from one guide spline: 1 lock, or N branched sub-locks
     (ordered by increasing azimuth). Sub-locks are joined up to branch_row."""
-    __slots__ = ("locks", "mid", "az", "mid_width", "order", "branch_row", "src", "mirrored")
+    __slots__ = ("locks", "mid", "az", "mid_width", "order", "branch_row", "src", "mirrored",
+                 "path", "length", "remake")
 
     def __init__(self, locks, mid, az, mid_width, order, branch_row):
         # ordering / adjacency use the middle of the guide, not the root, so
@@ -467,6 +472,9 @@ class Unit:
         self.branch_row = branch_row
         self.src = int(order)      # index of the guide spline
         self.mirrored = False
+        self.path = []             # dense guide polyline [(position, t)]
+        self.length = 0.0
+        self.remake = None         # callable(align) -> Unit with aligned rows
 
 
 def _eval_at(samples, lengths, total, t):
@@ -612,7 +620,12 @@ def deform_samples(samples, center, prm, tilt_sign=1.0, n=160, layer=None):
     return out
 
 
-def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=None):
+def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=None, align=None):
+    """Build the lock(s) of one guide.
+
+    align: optional row params for rows 0..m (from plane_align) so that the
+    first rows lie on a neighbour's row planes; later rows keep this guide's
+    own density layout."""
     import random
     rng = rng or random.Random(0)
     if prm.root_extend > 0.0 and len(samples) >= 2:
@@ -652,13 +665,41 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=N
     # across laterally joined guides whether or not each one branches
     branchy = segs >= 4 and (prm.branches > 1 or prm.branch_jitter > 0)
 
+    al = None
+    if align and len(align) >= 2:
+        limit = (tb - 1e-3) if branchy else 0.97
+        cap = (n_pre - 1) if branchy else (segs - 1)
+        al = [0.0]
+        end = tb if branchy else 1.0
+        rows_to_end = n_pre if branchy else segs
+        for t in align[1:cap + 1]:
+            if t <= al[-1] + 1e-3 or t >= limit:
+                break
+            # keep room for the remaining rows: stop aligning before they
+            # would have to bunch up (at least half the average spacing)
+            left = rows_to_end - len(al)
+            if (end - t) < 0.5 * left * end / rows_to_end:
+                break
+            al.append(t)
+        if len(al) < 2:
+            al = None
+
     def row_ts(t_end):
         if not branchy:
+            if al:
+                m = len(al) - 1
+                return al + _layout(dens, al[-1], 1.0, segs - m)[1:]
             return _layout(dens, 0.0, 1.0, segs)
-        pre = _layout(dens, 0.0, tb, n_pre)
+        if al:
+            m = len(al) - 1
+            pre = al + _layout(dens, al[-1], tb, n_pre - m)[1:]
+        else:
+            pre = _layout(dens, 0.0, tb, n_pre)
         post = _layout(dens, tb, 1.0, n_post)
         k = (t_end - tb) / (1.0 - tb)
         return pre + [tb + (x - tb) * k for x in post[1:]]
+
+    path = [(samples[i][0], lengths[i] / total) for i in range(len(samples))]
 
     # ---- single lock -------------------------------------------------------
     if nb == 1:
@@ -670,7 +711,9 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=N
         lk = Lock(frames, widths, tl, _azimuth_rev(center, P, B, widths[len(frames) // 3]))
         im = len(frames) // 2
         Pm = frames[im][0]
-        return Unit([lk], Pm, center.head_coord(Pm)[0], widths[im], order, -1)
+        u = Unit([lk], Pm, center.head_coord(Pm)[0], widths[im], order, -1)
+        u.path, u.length = path, total
+        return u
 
     # ---- branched lock -------------------------------------------------------
     # parent frames on a fine grid, interpolated at any t
@@ -732,7 +775,9 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=N
     for idx, lk in enumerate(locks):
         lk.sub, lk.nsub = idx, len(locks)
     Pm, _Bm, radm, _ = frame_at(0.5)
-    return Unit(locks, Pm, center.head_coord(Pm)[0], parent_w(0.5, radm), order, n_pre)
+    u = Unit(locks, Pm, center.head_coord(Pm)[0], parent_w(0.5, radm), order, n_pre)
+    u.path, u.length = path, total
+    return u
 
 
 def cluster_units(units, prm):
@@ -756,6 +801,86 @@ def cluster_units(units, prm):
         else:
             runs.append([u])
     return runs
+
+
+def _path_at(path, t):
+    """Position and unit tangent of a dense guide polyline at param t."""
+    n = len(path)
+    lo, hi = 0, n - 1
+    while hi - lo > 1:
+        m = (lo + hi) // 2
+        if path[m][1] < t:
+            lo = m
+        else:
+            hi = m
+    (pa, ta), (pb, tb) = path[lo], path[hi]
+    f = (t - ta) / (tb - ta) if tb > ta else 0.0
+    d = pb - pa
+    tan = d.normalized() if d.length > EPS else Vector((0.0, 0.0, -1.0))
+    return pa.lerp(pb, min(max(f, 0.0), 1.0)), tan
+
+
+def plane_align(ref, nb, t_band_end, reach):
+    """Row params for `nb` whose rows sit on `ref`'s row planes.
+
+    For each row of `ref` up to t_band_end, intersect the plane through the
+    row centre (normal = guide tangent) with nb's guide, walking forward so
+    the result stays monotonic. Stops where the plane no longer meets nb
+    nearby or meets it at a grazing angle. Returns [0, t1, ..., tm] or None."""
+    ts_ref = ref.locks[0].ts
+    path = nb.path
+    if len(path) < 2 or len(ref.path) < 2:
+        return None
+    out = [0.0]
+    k = 0
+    for i in range(1, len(ts_ref)):
+        if ts_ref[i] > t_band_end + 1e-9:
+            break
+        P0, n = _path_at(ref.path, ts_ref[i])
+        hit = None
+        dprev = (path[k][0] - P0).dot(n)
+        for j in range(k, len(path) - 1):
+            d1 = (path[j + 1][0] - P0).dot(n)
+            if dprev <= 0.0 < d1:
+                f = -dprev / (d1 - dprev) if d1 != dprev else 0.0
+                q = path[j][0].lerp(path[j + 1][0], f)
+                seg = path[j + 1][0] - path[j][0]
+                if (q - P0).length <= reach and seg.length > EPS and abs(seg.normalized().dot(n)) >= 0.3:
+                    hit = (j, path[j][1] + (path[j + 1][1] - path[j][1]) * f)
+                break
+            dprev = d1
+        if hit is None or hit[1] <= out[-1] + 1e-3:
+            break
+        k = hit[0]
+        out.append(hit[1])
+    return out if len(out) >= 2 else None
+
+
+def align_run(run, band_ends, reach_scale=4.0):
+    """Re-make the units of a joined run so that, inside each join band,
+    neighbours share the row planes of the longest guide (propagated along
+    the chain). Returns (units, ref_side) where ref_side[b] is 0 if the left
+    unit of boundary b is the reference, 1 if the right one is."""
+    n = len(run)
+    run = list(run)
+    ref_side = [0] * (n - 1)
+    if n < 2:
+        return run, ref_side
+    root = max(range(n), key=lambda i: run[i].length)
+    order = [(j, j - 1) for j in range(root + 1, n)] + [(j, j + 1) for j in range(root - 1, -1, -1)]
+    for j, r in order:
+        b = min(j, r)
+        ref_side[b] = 0 if r < j else 1
+        u, ref = run[j], run[r]
+        if u.remake is None:
+            continue
+        reach = reach_scale * (ref.mid_width + u.mid_width)
+        al = plane_align(ref, u, band_ends[b], reach)
+        if al:
+            nu = u.remake(al)
+            if nu is not None:
+                run[j] = nu
+    return run, ref_side
 
 
 def manual_runs(units, links):
@@ -1264,6 +1389,237 @@ def _orient_like_neighbours(g, face_ids):
             break
 
 
+# --------------------------------------------------------------------------
+# weld / cleanup pass (stitch separate pieces, fill small holes, orient)
+# --------------------------------------------------------------------------
+
+def _components(nv, faces):
+    parent = list(range(nv))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for f in faces:
+        r = find(f[0])
+        for q in f[1:]:
+            rq = find(q)
+            if rq != r:
+                parent[rq] = r
+    return [find(i) for i in range(nv)]
+
+
+def _boundary_loops(faces):
+    """Closed loops of open (single-use) edges, following face winding."""
+    nxt = {}
+    count = {}
+    for f in faces:
+        for a in range(len(f)):
+            u, v = f[a], f[(a + 1) % len(f)]
+            k = (u, v) if u < v else (v, u)
+            count[k] = count.get(k, 0) + 1
+    for f in faces:
+        for a in range(len(f)):
+            u, v = f[a], f[(a + 1) % len(f)]
+            k = (u, v) if u < v else (v, u)
+            if count[k] == 1:
+                nxt.setdefault(v, []).append(u)      # walk the hole the other way
+    loops = []
+    used = set()
+    for start in list(nxt):
+        for first in nxt[start]:
+            if (start, first) in used:
+                continue
+            loop = [start]
+            cur, prv = first, start
+            used.add((start, first))
+            ok = False
+            for _ in range(10000):
+                if cur == start:
+                    ok = True
+                    break
+                loop.append(cur)
+                cands = [c for c in nxt.get(cur, []) if (cur, c) not in used]
+                if not cands:
+                    break
+                nx = cands[0]
+                used.add((cur, nx))
+                prv, cur = cur, nx
+            if ok and len(loop) >= 3:
+                loops.append(loop)
+    return loops
+
+
+def orient_consistent(g):
+    """Make winding consistent inside every connected piece, keeping the
+    orientation most of its faces already had."""
+    nf = len(g.faces)
+    edge_faces = {}
+    for fi, f in enumerate(g.faces):
+        for a in range(len(f)):
+            u, v = f[a], f[(a + 1) % len(f)]
+            edge_faces.setdefault((u, v) if u < v else (v, u), []).append(fi)
+    flipped = [None] * nf
+    for seed in range(nf):
+        if flipped[seed] is not None:
+            continue
+        flipped[seed] = False
+        comp = [seed]
+        stack = [seed]
+        while stack:
+            fi = stack.pop()
+            f = g.faces[fi]
+            if flipped[fi]:
+                f = tuple(reversed(f))
+            for a in range(len(f)):
+                u, v = f[a], f[(a + 1) % len(f)]
+                for fj in edge_faces[(u, v) if u < v else (v, u)]:
+                    if fj == fi or flipped[fj] is not None:
+                        continue
+                    h = g.faces[fj]
+                    same = any(h[b] == u and h[(b + 1) % len(h)] == v for b in range(len(h)))
+                    flipped[fj] = same            # same direction -> must flip
+                    comp.append(fj)
+                    stack.append(fj)
+        if sum(1 for fi in comp if flipped[fi]) * 2 > len(comp):
+            for fi in comp:
+                flipped[fi] = not flipped[fi]
+    for fi in range(nf):
+        if flipped[fi]:
+            g.faces[fi] = tuple(reversed(g.faces[fi]))
+            g.face_uv[fi] = tuple(reversed(g.face_uv[fi]))
+
+
+def weld_geo(g, dist, max_hole=16, root_t=0.02):
+    """Stitch separate pieces whose open borders come within `dist`.
+
+    - only vertices on open borders are candidates, and two vertices of the
+      same piece are never merged (so notches between joined locks and thin
+      tips stay open); a merge cluster holds at most one vertex per piece
+    - faces that collapse or become duplicates are removed
+    - small holes (<= max_hole edges) left by the stitch are filled with
+      quad ladders; root openings (t ~ 0) are left open
+    - winding is made consistent afterwards
+    Returns the number of merged vertices."""
+    from mathutils import kdtree
+    nv = len(g.verts)
+    if nv == 0 or dist <= 0.0:
+        return 0
+    count = {}
+    for f in g.faces:
+        for a in range(len(f)):
+            u, v = f[a], f[(a + 1) % len(f)]
+            k = (u, v) if u < v else (v, u)
+            count[k] = count.get(k, 0) + 1
+    border = sorted({q for k, c in count.items() if c == 1 for q in k})
+    if not border:
+        return 0
+    comp = _components(nv, g.faces)
+    kd = kdtree.KDTree(len(border))
+    for i in border:
+        kd.insert(g.verts[i], i)
+    kd.balance()
+    pairs = []
+    for i in border:
+        for _co, j, d in kd.find_range(g.verts[i], dist):
+            if j > i and comp[i] != comp[j]:
+                pairs.append((d, i, j))
+    if not pairs:
+        return 0
+    pairs.sort()
+    parent = {}
+    members = {}
+
+    def find(x):
+        while parent.get(x, x) != x:
+            x = parent[x]
+        return x
+    for _d, i, j in pairs:
+        ri, rj = find(i), find(j)
+        if ri == rj:
+            continue
+        ci = members.get(ri, {comp[ri]: ri})
+        cj = members.get(rj, {comp[rj]: rj})
+        if set(ci) & set(cj):
+            continue                       # would put two vertices of one piece together
+        parent[rj] = ri
+        ci.update(cj)
+        members[ri] = ci
+        members.pop(rj, None)
+    remap = list(range(nv))
+    merged = 0
+    for root, cl in members.items():
+        idx = list(cl.values())
+        if len(idx) < 2:
+            continue
+        co = sum((g.verts[q] for q in idx), Vector()) / len(idx)
+        n = sum((g.normals[q] for q in idx), Vector()) if g.normals else None
+        for q in idx:
+            remap[q] = root
+            merged += 1
+        g.verts[root] = co
+        if n is not None and n.length > EPS:
+            g.normals[root] = n.normalized()
+        merged -= 1
+    if not merged:
+        return 0
+    faces, uvs, kinds, mats = [], [], [], []
+    seen = {}
+    for f, uv, kind, mat in zip(g.faces, g.face_uv, g.face_kind, g.face_mat):
+        nf, nuv = [], []
+        for q, u in zip(f, uv):
+            r = remap[q]
+            if r not in nf:
+                nf.append(r)
+                nuv.append(u)
+        if len(nf) < 3:
+            continue
+        key = tuple(sorted(nf))
+        if key in seen:
+            seen[key] = None                   # duplicated wall: drop both copies
+            continue
+        seen[key] = len(faces)
+        faces.append(tuple(nf))
+        uvs.append(tuple(nuv))
+        kinds.append(kind)
+        mats.append(mat)
+    dup_keys = {k for k, i in seen.items() if i is None}
+    keep = [i for i, f in enumerate(faces) if tuple(sorted(f)) not in dup_keys]
+    g.faces = [faces[i] for i in keep]
+    g.face_uv = [uvs[i] for i in keep]
+    g.face_kind = [kinds[i] for i in keep]
+    g.face_mat = [mats[i] for i in keep]
+    # fill small holes created by the stitch
+    for loop in _boundary_loops(g.faces):
+        if len(loop) > max_hole or any(g.t[q] <= root_t for q in loop):
+            continue
+        if not any(remap[q] != q or q in members for q in loop):
+            continue                           # untouched border (sheet edge, notch)
+        n = len(loop)
+        lo, hi = 0, n - 1
+        while hi - lo >= 3:
+            g.add_face((loop[lo], loop[lo + 1], loop[hi - 1], loop[hi]),
+                       [(0.5, g.t[q]) for q in (loop[lo], loop[lo + 1], loop[hi - 1], loop[hi])])
+            lo += 1
+            hi -= 1
+        if hi - lo == 2:
+            g.add_face((loop[lo], loop[lo + 1], loop[hi]),
+                       [(0.5, g.t[q]) for q in (loop[lo], loop[lo + 1], loop[hi])])
+    orient_consistent(g)
+    # drop vertices no face uses any more
+    used = sorted({q for f in g.faces for q in f})
+    new = {old: i for i, old in enumerate(used)}
+    g.verts = [g.verts[q] for q in used]
+    g.t = [g.t[q] for q in used]
+    g.inner = [g.inner[q] for q in used]
+    g.head = [g.head[q] for q in used] if g.head else g.head
+    if g.normals:
+        g.normals = [g.normals[q] for q in used]
+    g.faces = [tuple(new[q] for q in f) for f in g.faces]
+    return merged
+
+
 def _relax(g, weights, iterations, lam=0.5, mu=-0.53):
     """Taubin smoothing (no shrinking). Vertices on open borders, tips and
     walls (triangles / notch quads) stay fixed; weights scale the motion."""
@@ -1417,26 +1773,51 @@ def build_group(spline_samples, center, prm, mirror=False, with_outline=True, li
                     u = make_unit(vs, center, prm, mirrored, order, random.Random(seed), layer=layer)
                     if u:
                         u.src, u.mirrored = n, mirrored
+
+                        def remake(al, vs=vs, mirrored=mirrored, order=order, seed=seed, n=n):
+                            nu = make_unit(vs, center, prm, mirrored, order, random.Random(seed),
+                                           layer=layer, align=al)
+                            if nu is not None:
+                                nu.src, nu.mirrored = n, mirrored
+                            return nu
+                        u.remake = remake
                         units.append(u)
-            for u in units:
-                for lk in u.locks:
-                    lk.unit = uid
-                uid += 1
             if links:
                 runs = manual_runs(units, links)       # manual joins win over auto
             else:
                 runs = [(run, None) for run in cluster_units(units, prm)]
+            aligned = []
             for run, ranges in runs:
+                if ranges is None:
+                    ends = [prm.split] * (len(run) - 1)
+                else:
+                    ends = [ranges[b][1] for b in range(len(run) - 1)]
+                if prm.plane_rows and len(run) > 1:
+                    run, ref_side = align_run(run, ends)
+                else:
+                    ref_side = [None] * (len(run) - 1)
+                aligned.append((run, ranges, ref_side))
+            for run, _r, _s in aligned:
+                for u in run:
+                    for lk in u.locks:
+                        lk.unit = uid
+                    uid += 1
+            for run, ranges, ref_side in aligned:
                 locks, rows, starts = [], [], []
                 for ui, u in enumerate(run):
                     if locks:
                         rc = len(u.locks[0].frames) - (1 if prm.tip_mode == 'POINT' else 0)
+                        a, bl = locks[-1], u.locks[0]
+                        side = ref_side[ui - 1]
+                        if side is not None:
+                            # rows are plane-aligned: measure the band on the reference
+                            a = bl = (a if side == 0 else bl)
                         if ranges is None:
-                            rows.append(_lateral_row(locks[-1], u.locks[0], prm.split, rc))
+                            rows.append(_lateral_row(a, bl, prm.split, rc))
                             starts.append(0)
                         else:
                             t0, t1 = ranges[ui - 1]
-                            r0, r1 = _band_rows(locks[-1], u.locks[0], t0, t1, rc)
+                            r0, r1 = _band_rows(a, bl, t0, t1, rc)
                             rows.append(r1)
                             starts.append(r0)
                     for j, lk in enumerate(u.locks):

@@ -24,7 +24,7 @@ PARAM_KEYS = (
     "bevel", "bend_density", "curl_turns", "curl_radius", "curl_start", "wave_amp", "wave_freq",
     "lift", "puff", "puff_pos", "tip_flip", "roll", "layers", "layer_gap", "layer_shift",
     "layer_front_len", "layer_back_len", "layer_width", "layer_flip",
-    "cut_taper", "cut_enable", "cut_height",
+    "cut_taper", "cut_enable", "cut_height", "plane_rows",
 )
 
 _building = False
@@ -92,6 +92,8 @@ def generate(curve_ob, world=True, with_outline=True):
              if l.a in remap and l.b in remap and l.a != l.b]
     hair, outline = core.build_group(samples, center, prm, mirror=st.mirror_x,
                                      with_outline=with_outline, links=links)
+    if st.weld_dist > 0.0:
+        core.weld_geo(hair, st.weld_dist)
     if not world:
         inv = mw.inverted_safe()
         hair.transform(inv)
@@ -323,6 +325,30 @@ def on_spline_removed(curve_ob, idx):
             l.b -= 1
 
 
+def check_connections(ob, root_t=0.02):
+    """Problems on a generated hair mesh: open edges that are neither at a
+    root nor on the outer border of a single-sheet group, and edges with
+    more than two faces. Returns (open_edges, nonmanifold_edges)."""
+    me = ob.data
+    t = me.attributes.get("TH_t")
+    tv = [0.0] * len(me.vertices)
+    if t is not None:
+        t.data.foreach_get("value", tv)
+    use = {}
+    for p in me.polygons:
+        vs = list(p.vertices)
+        for a in range(len(vs)):
+            k = tuple(sorted((vs[a], vs[(a + 1) % len(vs)])))
+            use[k] = use.get(k, 0) + 1
+    owner = owner_group(ob)
+    sheet = owner is not None and owner.toon_hair.backface != 'CLOSED'
+    open_e = [k for k, c in use.items() if c == 1 and min(tv[k[0]], tv[k[1]]) > root_t]
+    if sheet:
+        open_e = []          # single sheets are open by design
+    many = [k for k, c in use.items() if c > 2]
+    return open_e, many
+
+
 def triangle_count(ob):
     if ob is None or ob.type != 'MESH':
         return 0
@@ -362,7 +388,7 @@ def unwrap(ob, margin=0.01):
         ctx.view_layer.objects.active = prev_active
 
 
-def bake(groups, name="Hair_Baked", with_outline=False, collection=None):
+def bake(groups, name="Hair_Baked", with_outline=False, collection=None, weld=0.0):
     """Merge groups into one standalone mesh (world space) for export."""
     hair = core.Geo()
     outline = core.Geo()
@@ -373,11 +399,14 @@ def bake(groups, name="Hair_Baked", with_outline=False, collection=None):
         mat = g.toon_hair.material
         if mat not in mats:
             mats.append(mat)
-        face_mats += [mats.index(mat)] * len(h.faces)
+        h.face_mat = [mats.index(mat)] * len(h.faces)
         hair.extend(h)
         if o is not None:
             outline.extend(o)
 
+    if weld > 0.0:
+        core.weld_geo(hair, weld)          # stitch neighbouring groups' borders
+    face_mats = hair.face_mat
     collection = collection or bpy.context.scene.collection
     me = bpy.data.meshes.new(name)
     write_mesh(me, hair, custom_normals=any(g.toon_hair.normal_mode == 'VOLUME' for g in groups),

@@ -135,6 +135,92 @@ def face_islands(me, cut_seams=True):
     return len({find(i) for i in range(len(me.polygons))})
 
 
+def test_plane_rows_and_weld():
+    """Plane-shared rows for guides of different lengths, weld pass, checker."""
+    import random
+    from mathutils import Matrix
+    from toon_hair_studio import core, draw
+    c = core.Center(Matrix.Diagonal((0.1, 0.1, 0.1, 1)))
+
+    def guide(dx, length):
+        return [(Vector((dx, -0.11 - 0.01 * i / 7, 0.06 - length * i / 7)), 1.0, 0.0) for i in range(8)]
+    smps = [guide(-0.012, 0.18), guide(0.012, 0.24)]       # lengths differ by a third
+    offsets = {}
+    for plane in (False, True):
+        prm = core.StrandParams(width=0.03, connect=True, split=0.5, connect_ratio=3.0,
+                                length_segments=12, profile_segments=4, plane_rows=plane)
+        prm.density_profile = core.density_profile(smps, prm)
+        units = []
+        for n, smp in enumerate(smps):
+            u = core.make_unit(smp, c, prm, False, float(n), random.Random(n))
+            u.remake = (lambda al, smp=smp, n=n: core.make_unit(smp, c, prm, False, float(n),
+                                                                random.Random(n), align=al))
+            units.append(u)
+        run = core.cluster_units(units, prm)[0]
+        if plane:
+            run, _side = core.align_run(run, [prm.split])
+        ref, nb = sorted(run, key=lambda u: -u.length)
+        band = [i for i, t in enumerate(ref.locks[0].ts) if 0 < t <= prm.split]
+        offsets[plane] = max(abs((nb.locks[0].frames[i][0] - ref.locks[0].frames[i][0]).dot(ref.locks[0].frames[i][1]))
+                             for i in band)
+        h, _o = core.build_group(smps, c, prm, with_outline=False)
+        check(all(core.newell([h.verts[q] for q in f]).length > 1e-12 for f in h.faces),
+              f"plane_rows={plane}: degenerate faces")
+    check(offsets[True] < 1e-4 < offsets[False], f"plane rows not aligned: {offsets}")
+
+    # weld two single-sheet groups whose borders touch
+    center = bpy.data.objects[draw.CENTER_NAME]
+    gs = []
+    for dx in (-0.0151, 0.0151):
+        g = draw.new_group(bpy.context, 'CUSTOM', center)
+        st = g.toon_hair
+        st.backface, st.width, st.root_ratio, st.tip_mode, st.tip_min = 'SINGLE', 0.03, 1.0, 'BLUNT', 1.0
+        st.bulge_pos, st.curvature = 0.0, 0.0
+        inv = g.matrix_world.inverted()
+        cc = center.matrix_world.to_translation()
+        draw.add_bezier(g.data, [inv @ (cc + Vector((dx, -0.2, 0.05 - 0.05 * k))) for k in range(4)])
+        build.rebuild(g)
+        gs.append(g)
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    for g in gs:
+        g.select_set(True)
+    res = bpy.ops.toon_hair.bake('EXEC_DEFAULT', selected_only=True, weld=0.002, name="Hair_Welded")
+    ob = bpy.data.objects.get("Hair_Welded")
+    check(res == {'FINISHED'} and ob is not None, "weld bake failed")
+    me = ob.data
+    check(islands(me) == 1, f"weld: groups not stitched ({islands(me)} islands)")
+    use = edge_use(me)
+    check(all(c_ <= 2 for c_ in use.values()), "weld: non-manifold edges")
+    directed = {}
+    for p in me.polygons:
+        vs = list(p.vertices)
+        for a_ in range(len(vs)):
+            e = (vs[a_], vs[(a_ + 1) % len(vs)])
+            directed[e] = directed.get(e, 0) + 1
+    check(all(n_ == 1 for n_ in directed.values()), "weld: inconsistent winding")
+    # the same stitch inside one group via weld_dist
+    g = gs[0]
+    sp = gs[1].data.splines[0]
+    draw.add_bezier(g.data, [gs[1].matrix_world @ bp.co for bp in sp.bezier_points])
+    g.toon_hair.connect = False
+    g.toon_hair.weld_dist = 0.002
+    me = g.toon_hair.hair_object.data
+    check(islands(me) == 1, "weld_dist: locks not stitched")
+    # closed locks stay valid with welding on
+    g.toon_hair.backface = 'CLOSED'
+    analyse(g, g.toon_hair, "weld_dist/closed")
+    # connection checker finds nothing on clean groups
+    res = bpy.ops.toon_hair.check()
+    check(res == {'FINISHED'}, "check operator failed")
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for o in bpy.data.objects:
+        if build.is_group(o) and o.toon_hair.hair_object and o.toon_hair.backface == 'CLOSED':
+            op_, many = build.check_connections(o.toon_hair.hair_object)
+            check(not op_ and not many, f"checker: {o.name} open={len(op_)} many={len(many)}")
+
+
 def test_uv_seams():
     """Front / back seams split every closed lock into two UV islands."""
     for name in ("Hair_Bangs", "Hair_Back", "Hair_Ahoge"):
@@ -337,6 +423,7 @@ def test_new_features():
     test_pattsun()
     test_live_scope()
     test_uv_seams()
+    test_plane_rows_and_weld()
 
     # density layout puts more loops at bends and tips
     prm = core.StrandParams(length_segments=12, tip_bias=0.5, bend_density=1.0)

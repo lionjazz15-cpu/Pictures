@@ -266,6 +266,13 @@ class ToonHairSettings(bpy.types.PropertyGroup):
         items=[('SMOOTH', "なめらか", "隣の房と段差なく1枚の面としてつなぐ (反り・厚みをつなぎ目で平らにし、曲線補間+スムージング)"),
                ('GROOVE', "毛束感(溝)", "房ごとに反りを残し、つなぎ目に溝を入れる")],
         default='SMOOTH', update=_upd)
+    weld_dist: FloatProperty(name="近い縁を溶接", default=0.0, min=0.0, soft_max=0.02,
+                             subtype='DISTANCE', unit='LENGTH', update=_upd,
+                             description="つないでいない房どうしの開いた縁が、この距離以内なら縫い合わせる (0で無効)。"
+                                         "同じ塊の中は溶接しないので切れ込みは閉じない")
+    plane_rows: BoolProperty(name="行の平面をそろえる", default=True, update=_upd,
+                             description="つないだ房同士で、一番長い房の行の平面に隣の房の行を合わせる。"
+                                         "長さの違うカーブをつないでも、つなぎ目の行がまっすぐそろう")
     smooth_iterations: IntProperty(name="なめらかさ", default=4, min=0, max=20, update=_upd,
                                    description="連結部分にかける縮まないスムージング(Taubin)の回数")
     connect_ratio: FloatProperty(name="連結する距離", default=1.8, min=0.1, soft_max=6.0, update=_upd,
@@ -687,6 +694,49 @@ class TOONHAIR_OT_unlink(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class TOONHAIR_OT_check(bpy.types.Operator):
+    bl_idname = "toon_hair.check"
+    bl_label = "つながりチェック"
+    bl_description = ("髪メッシュの穴(根元以外の開いた辺)と、3面以上が集まる辺を調べます。"
+                      "見つかったら、そのメッシュの編集モードで該当する辺を選択して表示します")
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        groups = [o for o in bpy.data.objects if build.is_group(o) and o.toon_hair.hair_object]
+        total_open = total_many = 0
+        worst = None
+        for g in groups:
+            hob = g.toon_hair.hair_object
+            open_e, many = build.check_connections(hob)
+            total_open += len(open_e)
+            total_many += len(many)
+            if (open_e or many) and worst is None:
+                worst = (hob, set(open_e) | set(many))
+        if worst is None:
+            self.report({'INFO'}, f"問題なし ({len(groups)} グループ)")
+            return {'FINISHED'}
+        hob, bad = worst
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        for e in hob.data.edges:
+            e.select = tuple(sorted(e.vertices)) in bad
+        for v in hob.data.vertices:
+            v.select = False
+        for p in hob.data.polygons:
+            p.select = False
+        hidden = hob.hide_select
+        hob.hide_select = False
+        for o in context.selected_objects:
+            o.select_set(False)
+        hob.select_set(True)
+        context.view_layer.objects.active = hob
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_mode(type='EDGE')
+        hob.hide_select = hidden
+        self.report({'WARNING'}, f"穴 {total_open} 辺 / 3面以上 {total_many} 辺。{hob.name} で選択表示中 (Tabで戻る)")
+        return {'FINISHED'}
+
+
 class TOONHAIR_OT_rebuild(bpy.types.Operator):
     bl_idname = "toon_hair.rebuild"
     bl_label = "再生成"
@@ -717,6 +767,9 @@ class TOONHAIR_OT_bake(bpy.types.Operator):
     with_outline: BoolProperty(name="アウトラインも出力", default=False,
                                description="MToon等のシェーダー側アウトラインを使うならOFF")
     name: bpy.props.StringProperty(name="名前", default="Hair_Baked")
+    weld: FloatProperty(name="グループ間を溶接", default=0.0, min=0.0, soft_max=0.02,
+                        subtype='DISTANCE', unit='LENGTH',
+                        description="違うグループ(房の塊)の開いた縁がこの距離以内なら縫い合わせる。0で無効")
     uv_mode: EnumProperty(
         name="UV",
         items=[('STRIP', "房ごと 0〜1", "U=幅方向, V=根元→毛先。グラデーションテクスチャ向け (重なりあり)"),
@@ -736,7 +789,7 @@ class TOONHAIR_OT_bake(bpy.types.Operator):
         if not groups:
             self.report({'WARNING'}, "毛束グループがありません")
             return {'CANCELLED'}
-        ob, oob = build.bake(groups, self.name, self.with_outline, context.collection)
+        ob, oob = build.bake(groups, self.name, self.with_outline, context.collection, weld=self.weld)
         if self.uv_mode == 'UNWRAP':
             build.unwrap(ob)
         proxy_groups = [g for g in groups if g.toon_hair.normal_mode == 'PROXY'
@@ -841,6 +894,7 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
         row = box.row(align=True)
         row.operator("toon_hair.bake", icon='EXPORT')
         row.operator("toon_hair.rebuild", text="", icon='FILE_REFRESH').all = True
+        box.operator("toon_hair.check", icon='ZOOM_ALL')
 
 
 class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
@@ -1001,6 +1055,8 @@ class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
         col.active = st.connect and len(st.links) == 0
         lay = col
         lay.prop(st, "connect_style", expand=True)
+        lay.prop(st, "plane_rows")
+        lay.prop(st, "weld_dist")
         if st.connect_style == 'SMOOTH':
             lay.prop(st, "smooth_iterations")
         lay.prop(st, "order")
@@ -1110,6 +1166,7 @@ classes = (
     TOONHAIR_OT_sample,
     TOONHAIR_OT_link_selected,
     TOONHAIR_OT_unlink,
+    TOONHAIR_OT_check,
     TOONHAIR_OT_rebuild,
     TOONHAIR_OT_bake,
     TOONHAIR_PT_main,
