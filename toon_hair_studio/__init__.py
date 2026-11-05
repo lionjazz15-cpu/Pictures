@@ -28,8 +28,19 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, IntProperty,
                        PointerProperty)
 from mathutils import Vector
 
-from . import build, core, materials, presets
-from .icons import ic
+# When the add-on is updated without restarting Blender, the package is
+# re-imported but its submodules (build, core, ...) stay cached in
+# sys.modules with the OLD code. Drop them so every import is fresh.
+def _drop_stale_submodules():
+    import sys
+    for name in [n for n in sys.modules if n.startswith(__name__ + ".")]:
+        del sys.modules[name]
+
+
+_drop_stale_submodules()
+
+from . import build, core, materials, presets  # noqa: E402
+from .icons import ic  # noqa: E402
 from contextlib import contextmanager
 
 # ==========================================================================

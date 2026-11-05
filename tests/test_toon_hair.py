@@ -523,6 +523,20 @@ def test_new_features():
     check(lay[-2] > 0.9 and (lay[1] - lay[0]) > (lay[-1] - lay[-2]), "density layout not denser at tip")
 
 
+def test_reinstall_reload():
+    """Updating the add-on without restarting must not keep stale submodules."""
+    import types
+    import toon_hair_studio as pkg
+    pkg.unregister()
+    stale = types.ModuleType(pkg.__name__ + ".build")
+    sys.modules[pkg.__name__ + ".build"] = stale
+    del sys.modules[pkg.__name__]
+    import toon_hair_studio as fresh
+    check(fresh.build is not stale and hasattr(fresh.build, "selected_ts"),
+          "reinstall kept a stale build module")
+    fresh.register()
+
+
 def main():
     th.register()
     bpy.ops.toon_hair.sample_hairstyle()
@@ -579,6 +593,8 @@ def main():
     baked = bpy.data.objects.get("Hair_Baked")
     check(baked is not None and baked.data.has_custom_normals, "baked mesh lacks custom normals")
     check(baked is not None and "TH_pin" in baked.vertex_groups, "baked mesh lacks TH_pin")
+
+    test_reinstall_reload()
 
     if FAILS:
         print("\n".join(FAILS[:40]))
