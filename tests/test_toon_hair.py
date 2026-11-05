@@ -135,6 +135,93 @@ def face_islands(me, cut_seams=True):
     return len({find(i) for i in range(len(me.polygons))})
 
 
+class _OpProps:
+    def __init__(self, idname):
+        mod, name = idname.split(".")
+        self._rna = getattr(getattr(bpy.ops, mod), name).get_rna_type()
+
+    def __setattr__(self, key, value):
+        if key.startswith("_"):
+            return object.__setattr__(self, key, value)
+        check(key in self._rna.properties, f"ui: operator {self._rna.identifier} has no property {key}")
+
+
+class MockLayout:
+    """Records UI calls and validates icons, properties and operators."""
+    ICONS = None
+
+    def __init__(self):
+        if MockLayout.ICONS is None:
+            items = bpy.types.UILayout.bl_rna.functions["label"].parameters["icon"].enum_items
+            MockLayout.ICONS = {i.identifier for i in items}
+        self.calls = 0
+
+    def __setattr__(self, key, value):
+        object.__setattr__(self, key, value)
+
+    def _icon(self, kw):
+        icon = kw.get("icon", "NONE")
+        check(icon in MockLayout.ICONS, f"ui: unknown icon {icon}")
+
+    def _sub(self, *a, **kw):
+        sub = MockLayout()
+        return sub
+    column = row = box = grid_flow = split = column_flow = _sub
+
+    def label(self, text="", **kw):
+        self._icon(kw)
+
+    def separator(self, **kw):
+        pass
+
+    def prop(self, data, prop, **kw):
+        self._icon(kw)
+        check(prop in data.bl_rna.properties, f"ui: {type(data).__name__} has no property {prop}")
+
+    def operator(self, idname, **kw):
+        self._icon(kw)
+        mod, name = idname.split(".")
+        check(hasattr(getattr(bpy.ops, mod), name), f"ui: unknown operator {idname}")
+        return _OpProps(idname)
+
+    def operator_menu_enum(self, idname, prop, **kw):
+        self._icon(kw)
+        ops = _OpProps(idname)
+        check(prop in ops._rna.properties, f"ui: {idname} has no enum {prop}")
+
+
+class _PanelSelf:
+    def __init__(self):
+        self.layout = MockLayout()
+
+
+def test_ui_draw():
+    """Run every panel's draw() against a validating mock layout."""
+    import toon_hair_studio as th
+    panels = [c for c in th.classes if issubclass(c, bpy.types.Panel)]
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    g = bpy.data.objects["Hair_Bangs"]
+    for active in (None, g):
+        bpy.context.view_layer.objects.active = active
+        for st_mode in ('POINT', 'CUT', 'BLUNT'):
+            if active is not None:
+                g.toon_hair.tip_mode = st_mode
+                g.toon_hair.layers = 'BOTH'
+            for cls in panels:
+                if hasattr(cls, "poll") and not cls.poll(bpy.context):
+                    continue
+                me = _PanelSelf()
+                try:
+                    if hasattr(cls, "draw_header"):
+                        cls.draw_header(me, bpy.context)
+                    cls.draw(me, bpy.context)
+                except Exception as ex:
+                    check(False, f"ui: {cls.__name__}.draw raised {type(ex).__name__}: {ex}")
+    g.toon_hair.tip_mode = 'POINT'
+    g.toon_hair.layers = 'NONE'
+
+
 def test_plane_rows_and_weld():
     """Plane-shared rows for guides of different lengths, weld pass, checker."""
     import random
@@ -424,6 +511,7 @@ def test_new_features():
     test_live_scope()
     test_uv_seams()
     test_plane_rows_and_weld()
+    test_ui_draw()
 
     # density layout puts more loops at bends and tips
     prm = core.StrandParams(length_segments=12, tip_bias=0.5, bend_density=1.0)

@@ -47,7 +47,12 @@ PRESETS = {
 
 ORDER = ('BANGS', 'PATTSUN', 'SIDE', 'BACK', 'BACK_VOLUME', 'SIDEBURN', 'AHOGE', 'TAIL', 'DRILL', 'CUSTOM')
 
-ITEMS = [(k, PRESETS[k][0], "", PRESETS[k][2], i) for i, k in enumerate(ORDER)]
+def _items():
+    from .icons import ic
+    return [(k, PRESETS[k][0], "", ic(PRESETS[k][2]), i) for i, k in enumerate(ORDER)]
+
+
+ITEMS = _items()
 
 
 def common(R):

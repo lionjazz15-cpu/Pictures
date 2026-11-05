@@ -29,6 +29,7 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, IntProperty,
 from mathutils import Vector
 
 from . import build, core, materials, presets
+from .icons import ic
 from contextlib import contextmanager
 
 # ==========================================================================
@@ -823,42 +824,42 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
 
         # ① 準備 ---------------------------------------------------------------
         box = lay.box()
-        box.label(text="① 準備", icon='USER')
+        box.label(text="① 準備", icon=ic('USER'))
         head = sc.toon_hair_head
         if head is None:
-            box.label(text="頭のメッシュを選択して ↓", icon='INFO')
+            box.label(text="頭のメッシュを選択して ↓", icon=ic('INFO'))
         else:
-            box.label(text=f"頭: {head.name}", icon='CHECKMARK')
-        box.operator("toon_hair.setup_head", icon='SPHERE')
+            box.label(text=f"頭: {head.name}", icon=ic('CHECKMARK'))
+        box.operator("toon_hair.setup_head", icon=ic('SPHERE'))
 
         # ② 作る ---------------------------------------------------------------
         box = lay.box()
-        box.label(text="② 作る: パーツを押して頭の上をドラッグ", icon='GREASEPENCIL')
+        box.label(text="② 作る: パーツを押して頭の上をドラッグ", icon=ic('GREASEPENCIL'))
         grid = box.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
         for key in presets.ORDER:
             label, _name, icon, _fn = presets.PRESETS[key]
-            grid.operator("toon_hair.draw", text=label, icon=icon).preset = key
+            grid.operator("toon_hair.draw", text=label, icon=ic(icon)).preset = key
         g = active_group(context)
         row = box.row(align=True)
         row.enabled = g is not None
-        row.operator("toon_hair.draw", text="選択中のグループに描き足す", icon='ADD').preset = 'ACTIVE'
+        row.operator("toon_hair.draw", text="選択中のグループに描き足す", icon=ic('ADD')).preset = 'ACTIVE'
         col = box.column(align=True)
-        col.label(text="カーブで作る (Tabで編集モード):", icon='CURVE_BEZCURVE')
+        col.label(text="カーブで作る (Tabで編集モード):", icon=ic('CURVE_BEZCURVE'))
         row = col.row(align=True)
-        row.operator_menu_enum("toon_hair.add_group", "preset", text="グループ追加", icon='OUTLINER_OB_CURVE')
-        row.operator("toon_hair.add_strand", text="カーソルに1房", icon='PLUS')
-        col.operator("toon_hair.convert_curve", icon='CURVE_DATA')
-        col.operator("toon_hair.sample_hairstyle", icon='OUTLINER_OB_HAIR')
+        row.operator_menu_enum("toon_hair.add_group", "preset", text="グループ追加", icon=ic('OUTLINER_OB_CURVE'))
+        row.operator("toon_hair.add_strand", text="カーソルに1房", icon=ic('PLUS'))
+        col.operator("toon_hair.convert_curve", icon=ic('CURVE_DATA'))
+        col.operator("toon_hair.sample_hairstyle", icon=ic('OUTLINER_OB_CURVES'))
 
         # ③ 調整 ---------------------------------------------------------------
         box = lay.box()
         if g is None:
-            box.label(text="③ 調整: 毛束グループを選択してください", icon='INFO')
+            box.label(text="③ 調整: 毛束グループを選択してください", icon=ic('INFO'))
         else:
             st = g.toon_hair
             row = box.row()
-            row.label(text=f"③ 調整: {g.name}", icon='CURVE_DATA')
-            row.prop(st, "auto_update", text="", icon='FILE_REFRESH')
+            row.label(text=f"③ 調整: {g.name}", icon=ic('CURVE_DATA'))
+            row.prop(st, "auto_update", text="", icon=ic('FILE_REFRESH'))
             col = box.column(align=True)
             col.row(align=True).prop(st, "lod", expand=True)
             col.prop(st, "section_preset", text="断面")
@@ -877,24 +878,24 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
             row.prop(st, "connect", text="自動でつなぐ", toggle=True)
             row.prop(st, "mirror_x", toggle=True)
             row = col.row(align=True)
-            row.operator("toon_hair.link_selected", text="選択点をつなぐ", icon='LINKED')
-            row.operator("toon_hair.unlink", text="", icon='UNLINKED').all = False
+            row.operator("toon_hair.link_selected", text="選択点をつなぐ", icon=ic('LINKED'))
+            row.operator("toon_hair.unlink", text="", icon=ic('UNLINKED')).all = False
             if st.links:
-                col.label(text=f"手動つなぎ {len(st.links)} か所 (自動より優先)", icon='LINKED')
+                col.label(text=f"手動つなぎ {len(st.links)} か所 (自動より優先)", icon=ic('LINKED'))
             col.row(align=True).prop(st, "backface", expand=True)
             tri = build.triangle_count(st.hair_object)
-            box.label(text=f"三角形: {tri:,}", icon='MESH_DATA')
-            box.label(text="細かい設定は下のパネル / カーブ編集: Alt+S 幅, Ctrl+T ねじれ", icon='BLANK1')
+            box.label(text=f"三角形: {tri:,}", icon=ic('MESH_DATA'))
+            box.label(text="細かい設定は下のパネル / カーブ編集: Alt+S 幅, Ctrl+T ねじれ", icon=ic('BLANK1'))
 
         # ④ 書き出し -----------------------------------------------------------
         box = lay.box()
         total = sum(build.triangle_count(o.toon_hair.hair_object)
                     for o in bpy.data.objects if build.is_group(o))
-        box.label(text=f"④ 書き出し (全体 三角形 {total:,})", icon='EXPORT')
+        box.label(text=f"④ 書き出し (全体 三角形 {total:,})", icon=ic('EXPORT'))
         row = box.row(align=True)
-        row.operator("toon_hair.bake", icon='EXPORT')
-        row.operator("toon_hair.rebuild", text="", icon='FILE_REFRESH').all = True
-        box.operator("toon_hair.check", icon='ZOOM_ALL')
+        row.operator("toon_hair.bake", icon=ic('EXPORT'))
+        row.operator("toon_hair.rebuild", text="", icon=ic('FILE_REFRESH')).all = True
+        box.operator("toon_hair.check", icon=ic('ZOOM_ALL'))
 
 
 class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
@@ -962,7 +963,7 @@ class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
         sub = col.column(align=True)
         sub.active = st.wave_amp > 0.0
         sub.prop(st, "wave_freq")
-        lay.label(text="ヒント: 編集モードで Alt+S=部分的な幅, Ctrl+T=ねじり", icon='INFO')
+        lay.label(text="ヒント: 編集モードで Alt+S=部分的な幅, Ctrl+T=ねじり", icon=ic('INFO'))
 
 
 class TOONHAIR_PT_volume(_Panel, bpy.types.Panel):
@@ -1045,12 +1046,12 @@ class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
         lay.use_property_split = True
         lay.use_property_decorate = False
         box = lay.box()
-        box.label(text=f"手動でつなぐ ({len(st.links)} か所, 自動より優先)", icon='LINKED')
-        box.label(text="編集モードで各カーブの点を選ぶ: 1点=根元から / 2点=その間", icon='BLANK1')
+        box.label(text=f"手動でつなぐ ({len(st.links)} か所, 自動より優先)", icon=ic('LINKED'))
+        box.label(text="編集モードで各カーブの点を選ぶ: 1点=根元から / 2点=その間", icon=ic('BLANK1'))
         row = box.row(align=True)
-        row.operator("toon_hair.link_selected", icon='LINKED')
-        row.operator("toon_hair.unlink", text="解除", icon='UNLINKED').all = False
-        row.operator("toon_hair.unlink", text="全部", icon='X').all = True
+        row.operator("toon_hair.link_selected", icon=ic('LINKED'))
+        row.operator("toon_hair.unlink", text="解除", icon=ic('UNLINKED')).all = False
+        row.operator("toon_hair.unlink", text="全部", icon=ic('X')).all = True
         col = lay.column()
         col.active = st.connect and len(st.links) == 0
         lay = col

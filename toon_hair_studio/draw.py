@@ -8,6 +8,7 @@ from bpy.props import EnumProperty, FloatProperty
 from mathutils import Vector
 
 from . import build, presets
+from .icons import ic
 
 CENTER_NAME = "TH_HeadCenter"
 
