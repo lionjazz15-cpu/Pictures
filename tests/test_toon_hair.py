@@ -684,6 +684,24 @@ def test_unify():
         lens = sorted((mw @ me.vertices[e.vertices[0]].co - mw @ me.vertices[e.vertices[1]].co).length
                       for e in me.edges)
         check(lens[len(lens) // 2] > 0.0, "unify: degenerate edges")
+        # an unattached thin stray lying on the bangs must not break the body
+        st.branches, st.branch_jitter = 1, 0
+        c_ = center.matrix_world.to_translation()
+        stray = [c_ + Vector((-0.012, -0.1, 0.03)), c_ + Vector((0.0, -0.115, -0.01)),
+                 c_ + Vector((0.02, -0.13, -0.06))]
+        sp = draw.add_bezier(g.data, [inv @ p for p in stray])
+        for bp in sp.bezier_points:
+            bp.radius = 0.4
+        build.rebuild(g)
+        check(islands(st.hair_object.data) == 2, f"unify: a loose stray split the body "
+              f"({islands(st.hair_object.data)} pieces)")
+        res = build.attach_curves(g, [len(g.data.splines) - 1], mode='EMBED')
+        build.rebuild(g)
+        check(bool(res) and islands(st.hair_object.data) == 1,
+              f"unify: stray drawn on the body did not attach ({res}, {islands(st.hair_object.data)} pieces)")
+        analyse(g, st, "unify/stray")
+        g.data.splines.remove(g.data.splines[len(g.data.splines) - 1])
+        build.on_spline_removed(g, len(g.data.splines))
         # only chosen locks: everything independent until picked
         st.unify_scope = 'SELECTED'
         build.rebuild(g)
@@ -714,6 +732,35 @@ def test_unify():
         st.unify = True
     finally:
         unify.build_unified = orig
+
+
+def test_duplicate():
+    """Shift+D on a group: the copy gets its own meshes (the original stays),
+    and a scaled copy keeps its proportions."""
+    bpy.ops.toon_hair.add_group(preset='SIDE', edit=False)
+    g = bpy.context.active_object
+    st = g.toon_hair
+    st.mirror_x = False
+    build.rebuild(g)
+    bpy.context.view_layer.update()            # dimensions are cached until then
+    dims0 = tuple(st.hair_object.dimensions)
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    g.select_set(True)
+    bpy.context.view_layer.objects.active = g
+    bpy.ops.object.duplicate()
+    d = bpy.context.active_object
+    d.location.x += 0.2
+    d.scale = (0.5, 0.5, 0.5)
+    bpy.context.view_layer.update()
+    build.rebuild(d)
+    bpy.context.view_layer.update()
+    check(d.toon_hair.hair_object is not st.hair_object, "duplicate shares the original's mesh")
+    check(d.toon_hair.hair_object.parent == d, "duplicate mesh not parented to the copy")
+    check(all(abs(a_ - b_) < 1e-4 for a_, b_ in zip(st.hair_object.dimensions, dims0)),
+          "duplicate changed the original's mesh")
+    ratio = [a_ / b_ for a_, b_ in zip(d.toon_hair.hair_object.dimensions, dims0) if b_ > 1e-6]
+    check(all(abs(r - 0.5) < 0.07 for r in ratio), f"scaled duplicate lost its proportions {ratio}")
 
 
 def test_new_features():
@@ -789,6 +836,7 @@ def test_new_features():
     test_attach_embed()
     test_long_lock_twist()
     test_unify()
+    test_duplicate()
 
     # density layout puts more loops at bends and tips
     prm = core.StrandParams(length_segments=12, tip_bias=0.5, bend_density=1.0)

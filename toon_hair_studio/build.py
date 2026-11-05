@@ -68,8 +68,30 @@ def owner_group(ob):
     return None
 
 
-def params_from(settings):
-    return core.StrandParams(**{k: getattr(settings, k) for k in PARAM_KEYS})
+SIZE_KEYS = ("width", "outline_width", "root_extend", "flip_offset")
+
+
+def size_scale(curve_ob):
+    """How much the group object has been scaled since it was made (a scaled
+    duplicate gets proportionally wider / thicker locks, not just longer)."""
+    st = curve_ob.toon_hair
+    s = sum(abs(x) for x in curve_ob.matrix_world.to_scale()) / 3.0
+    if s <= 1e-9:
+        return 1.0
+    if st.base_scale <= 0.0:
+        try:
+            st.base_scale = s
+        except AttributeError:           # read-only context (e.g. drawing)
+            return 1.0
+    return s / st.base_scale
+
+
+def params_from(settings, scale=1.0):
+    prm = core.StrandParams(**{k: getattr(settings, k) for k in PARAM_KEYS})
+    if abs(scale - 1.0) > 1e-6:
+        for k in SIZE_KEYS:
+            setattr(prm, k, getattr(prm, k) * scale)
+    return prm
 
 
 def center_of(settings):
@@ -77,15 +99,15 @@ def center_of(settings):
     return core.Center(c.matrix_world if c is not None else None)
 
 
-def generate(curve_ob, world=True, with_outline=True):
+def generate(curve_ob, world=True, with_outline=True, skip=()):
     """Return (hair Geo, outline Geo or None) for a hair group."""
     st = curve_ob.toon_hair
-    prm = params_from(st)
+    prm = params_from(st, size_scale(curve_ob))
     center = center_of(st)
     mw = curve_ob.matrix_world
     splines = list(curve_ob.data.splines)
     raw = [core.sample_spline(sp, mw) for sp in splines]
-    keep = [i for i, smp in enumerate(raw) if len(smp) >= 2]
+    keep = [i for i, smp in enumerate(raw) if len(smp) >= 2 and i not in skip]
     remap = {old: new for new, old in enumerate(keep)}
     samples = [raw[i] for i in keep]
     links, trunks, starts, hosts = [], {}, {}, {}
@@ -218,6 +240,12 @@ def _sync_culling(mat):
 def ensure_objects(curve_ob):
     st = curve_ob.toon_hair
     coll = _collection_of(curve_ob)
+    # a group duplicated without its meshes still points at the original's
+    # meshes: give it its own instead of overwriting the original's
+    if st.hair_object is not None and st.hair_object.parent is not curve_ob:
+        st.hair_object = None
+    if st.outline_object is not None and st.outline_object.parent is not curve_ob:
+        st.outline_object = None
     if st.hair_object is None or st.hair_object.name not in bpy.data.objects:
         st.hair_object = _new_child(curve_ob.name + HAIR_SUFFIX, curve_ob, coll)
     if st.material is None:
@@ -350,7 +378,7 @@ def _units_of(curve_ob):
     """One unit per spline (no mirror / layers), for geometric queries."""
     import random
     st = curve_ob.toon_hair
-    prm = params_from(st)
+    prm = params_from(st, size_scale(curve_ob))
     center = center_of(st)
     mw = curve_ob.matrix_world
     samples = [core.sample_spline(sp, mw) for sp in curve_ob.data.splines]
@@ -382,6 +410,31 @@ def _unit_width(u, t):
     ts = lk0.ts
     i = min(range(len(ts)), key=lambda k: abs(ts[k] - t))
     return sum(lk.widths[min(i, len(lk.widths) - 1)] for lk in u.locks)
+
+
+def _mesh_exit(curve_ob, su, s_idx):
+    """Param where the stuck curve's centre leaves the hair (all other
+    curves, as actually generated - e.g. the unified body), or None. Uses the
+    closed surface: inside = behind the nearest face."""
+    from mathutils.bvhtree import BVHTree
+    st = curve_ob.toon_hair
+    if st.backface != 'CLOSED':
+        return None
+    hair, _o = generate(curve_ob, world=True, with_outline=False, skip={s_idx})
+    if not hair.faces:
+        return None
+    bvh = BVHTree.FromPolygons(hair.verts, hair.faces)
+    inside_seen = False
+    for q, t in su.path:
+        hit = bvh.find_nearest(q)
+        if hit[0] is None:
+            continue
+        inside = (q - hit[0]).dot(hit[1]) < 0.0
+        if inside:
+            inside_seen = True
+        elif inside_seen:
+            return t
+    return None
 
 
 def _surface_exit(curve_ob, su, hu):
@@ -428,7 +481,8 @@ def _embed_curve(curve_ob, s_idx, units):
             continue
         dist, th, _ph = _nearest_on_path(hu.path, root)
         wh = _unit_width(hu, th)
-        if dist <= 0.5 * (wh + ws) * 1.1:
+        # (generous: in a unified body the surface spans the gaps between guides)
+        if dist <= 0.5 * (wh + ws) * 1.6:
             score = dist / max(wh, 1e-6)
             if best is None or score < best[0]:
                 best = (score, h_idx)
@@ -436,10 +490,12 @@ def _embed_curve(curve_ob, s_idx, units):
         return None
     h_idx = best[1]
     hu = units[h_idx]
-    t_out = _surface_exit(curve_ob, su, hu)
-    if t_out is None or t_out <= 0.02:
+    t_out = _mesh_exit(curve_ob, su, s_idx)
+    if t_out is None:
+        t_out = _surface_exit(curve_ob, su, hu)
+    if t_out is None:
         return None
-    start = max(0.0, t_out - 0.01)
+    start = max(0.0, t_out - 0.01)        # root right at the surface: keep it all
     links = curve_ob.toon_hair.links
     for i in range(len(links) - 1, -1, -1):
         if links[i].embed and links[i].stray_idx == s_idx:

@@ -147,6 +147,7 @@ class ToonHairSettings(bpy.types.PropertyGroup):
     uv_seams: BoolProperty(name="UVシーム", default=True, update=_upd,
                            description="表面と裏面(+ベベル・ふた)の境目に自動でシームを入れる")
     enabled: BoolProperty(default=False)
+    base_scale: FloatProperty(default=0.0, options={'HIDDEN'})   # object scale when made
     auto_update: BoolProperty(name="自動更新 Live", default=True,
                               description="カーブを編集したら即メッシュを再生成")
     hair_object: PointerProperty(type=bpy.types.Object)

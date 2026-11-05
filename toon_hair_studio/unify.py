@@ -93,7 +93,9 @@ def join_table(locks, rc, prm, force=None):
             # outside the join zone (or with joining off) neighbours become
             # one body only where they clearly overlap (buried / drawn on top
             # of each other); touching is not enough
-            if not f and min(la.widths[i], lb.widths[i]) < 0.45 * max(la.widths[i], lb.widths[i]):
+            # (branch sub-locks count with their whole guide's width)
+            wa, wb = la.widths[i] * la.nsub, lb.widths[i] * lb.nsub
+            if min(wa, wb) < 0.45 * max(wa, wb):
                 # a thin stray stuck into a lock does not melt into it by
                 # itself (that would reshape the host): use attach for that
                 row.append(False)
@@ -668,6 +670,17 @@ def build_layer(units, center, prm, hair, outline=None, links=None, uid=0):
     from .core import align_run
     if not units:
         return uid
+    # thin loose curves (stray hairs not attached yet) stay out of the chain,
+    # so they never break the body between the locks they lie on
+    linked = {x for link in links or [] for x in link[:2]}
+    if len(units) > 2:
+        ws = sorted(u.mid_width for u in units)
+        med = ws[len(ws) // 2]
+        loose = [u for u in units if u.mid_width < 0.5 * med and u.src not in linked]
+        if loose and len(loose) < len(units):
+            units = [u for u in units if u not in loose]
+            for u in loose:
+                uid = build_layer([u], center, prm, hair, outline, None, uid)
     seq = chain_order(units, links)
     link_rng = {}
     for link in links or []:

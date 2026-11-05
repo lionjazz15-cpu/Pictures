@@ -254,10 +254,52 @@ class TOONHAIR_OT_draw(bpy.types.Operator):
         from bpy_extras import view3d_utils
         return view3d_utils.region_2d_to_location_3d(context.region, context.region_data, coord, depth_point)
 
+    def _hair_ray(self, context, coord):
+        """Hit on the group's own hair mesh (stray hairs start in a lock)."""
+        from bpy_extras import view3d_utils
+        g = self._group()
+        hob = g.toon_hair.hair_object if g is not None else None
+        if hob is None or len(hob.data.polygons) == 0:
+            return False, None, None
+        region, rv3d = context.region, context.region_data
+        origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+        direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+        mi = hob.matrix_world.inverted()
+        ok, loc, nor, _idx = hob.ray_cast(mi @ origin, (mi.to_3x3() @ direction).normalized())
+        if not ok:
+            return False, None, None
+        nw = (hob.matrix_world.to_3x3().inverted().transposed() @ nor).normalized()
+        if nw.dot(direction) > 0.0:
+            nw = -nw
+        return True, hob.matrix_world @ loc, nw
+
     def _add_point(self, context, event):
         coord = (event.mouse_region_x, event.mouse_region_y)
-        hit, loc, nor = self._ray(context, coord)
         n = len(self.stroke)
+        if self.stray:
+            # a stray hair is drawn on the hair: it starts a little inside the
+            # lock under the cursor and then lifts slightly off its surface
+            hit, loc, nor = self._hair_ray(context, coord)
+            if hit:
+                g = self._group()
+                st = g.toon_hair
+                depth = 0.5 * st.width * st.thickness
+                if n == 0:
+                    p = loc - nor * depth
+                else:
+                    p = loc + nor * (depth * min(1.0, n / 3.0))
+                if not self.stroke or (p - self.stroke[-1]).length >= self.R * 0.04:
+                    self.stroke.append(p)
+                    _draw_points[:] = self.stroke
+                return
+            if self.stroke:
+                # past the hair: keep going in the air, never dive to the scalp
+                p = self._plane_point(context, coord, self.stroke[-1])
+                if (p - self.stroke[-1]).length >= self.R * 0.04:
+                    self.stroke.append(p)
+                    _draw_points[:] = self.stroke
+                return
+        hit, loc, nor = self._ray(context, coord)
         if hit:
             ramp = min(1.0, n / 3.0)       # root sits on the scalp, then lifts
             p = loc + nor * (self.lift * self.R * ramp)
