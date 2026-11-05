@@ -416,6 +416,7 @@ class StrandParams:
     order = 'AZIMUTH'         # AZIMUTH / CURVE
     connect_style = 'SMOOTH'  # SMOOTH (なめらか) / GROOVE (毛束の溝)
     plane_rows = True         # joined guides share row planes (HairHarpy-style)
+    unify = False             # whole group as one body (unify.py) instead of glued locks
     merge_overlaps = True     # joined locks that overlap from the root are laid side by side there
     auto_merge_roots = False  # also join unjoined locks whose roots overlap
     smooth_iterations = 4
@@ -1585,7 +1586,11 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
         _relax(g, [relax_w.get(kk, 0.0) if kk[0] in ('F', 'B') else 0.0 for kk in order],
                prm.smooth_iterations)
 
-    # ---- normals ---------------------------------------------------------------
+    finish_sheet(g, center, prm, hair, outline, closed)
+
+
+def finish_sheet(g, center, prm, hair, outline, closed):
+    """Normals, optional outline hull and flipped back faces; append to hair."""
     raw = g.vertex_normals()
     geo_n = []
     normals = []
@@ -2274,6 +2279,23 @@ def build_group(spline_samples, center, prm, mirror=False, with_outline=True, li
                             return nu
                         u.remake = remake
                         units.append(u)
+            if prm.unify:
+                # one clean body per layer; embedded curves stay separate and
+                # are bridged into it afterwards
+                from .unify import build_layer
+                emb = set((embed_starts or {}).keys())
+                main = [u for u in units if u.src not in emb]
+                pv0, pf0 = len(hair.verts), len(hair.faces)
+                uid = build_layer(main, center, prm, hair, outline, links, uid)
+                for mir in (False, True):
+                    pieces.append(({u.src for u in main}, mir, li, pv0, len(hair.verts), pf0, len(hair.faces)))
+                for u in units:
+                    if u.src not in emb:
+                        continue
+                    pv0, pf0 = len(hair.verts), len(hair.faces)
+                    uid = build_layer([u], center, prm, hair, outline, None, uid)
+                    pieces.append(({u.src}, u.mirrored, li, pv0, len(hair.verts), pf0, len(hair.faces)))
+                continue
             if links:
                 runs = manual_runs(units, links)       # manual joins win over auto
             elif prm.connect:

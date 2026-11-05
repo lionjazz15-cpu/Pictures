@@ -626,6 +626,68 @@ def test_manual_links():
     analyse(g, st, "links/editmode")
 
 
+def test_unify():
+    """Messy overlapping bangs become ONE clean body that splits into locks."""
+    from toon_hair_studio import draw, unify
+    center = bpy.data.objects[draw.CENTER_NAME]
+    c = center.matrix_world.to_translation()
+    g = draw.new_group(bpy.context, 'BANGS', center)
+    st = g.toon_hair
+    check(st.unify, "unify should be on for new groups")
+    inv = g.matrix_world.inverted()
+    # uneven gaps, overlaps and a short narrow lock buried between two others
+    for rx, ex, ls, rad in ((-0.07, -0.085, 0.95, 1.0), (-0.045, -0.05, 1.05, 1.1),
+                            (-0.035, -0.02, 0.6, 0.6), (-0.012, -0.012, 1.0, 1.0),
+                            (0.004, 0.022, 1.1, 1.2), (0.03, 0.045, 0.85, 0.9), (0.05, 0.08, 1.0, 1.0)):
+        pts = [c + Vector((rx * 0.5, -0.03, 0.1)), c + Vector((rx * 0.8, -0.085, 0.07)),
+               c + Vector(((rx + ex) * 0.5, -0.105, 0.02 - 0.03 * (ls - 1))),
+               c + Vector((ex, -0.11, -0.03 - 0.06 * (ls - 0.8)))]
+        sp = draw.add_bezier(g.data, [inv @ p for p in pts])
+        for bp in sp.bezier_points:
+            bp.radius = rad
+    captured = {}
+    orig = unify.build_unified
+
+    def spy(locks, *a, **kw):
+        J = orig(locks, *a, **kw)
+        captured["J"], captured["K"] = J, len(locks)
+        return J
+    unify.build_unified = spy
+    try:
+        for bf in ('CLOSED', 'SINGLE', 'FLIPPED'):
+            for bevel in (0.0, 0.3):
+                st.backface, st.bevel = bf, bevel
+                build.rebuild(g)
+                me = st.hair_object.data
+                analyse(g, st, f"unify/{bf}/bevel{bevel}")
+                check(islands(me) == (2 if bf == 'FLIPPED' else 1),
+                      f"unify/{bf}: group is not one body ({islands(me)} pieces)")
+        st.backface, st.bevel = 'CLOSED', 0.3
+        st.branches, st.branch_jitter = 1, 0
+        build.rebuild(g)
+        J, K = captured["J"], captured["K"]
+        check(K == 7, f"unify: expected 7 locks, got {K}")
+        check(all(row[0] for row in J), "unify: roots should all be one body")
+        check(all(not row[-1] for row in J), "unify: every pointed tip should be its own spike")
+        # each lock splits off at most once and never re-joins (clean V crotches)
+        for b, row in enumerate(J):
+            flips = sum(1 for i in range(len(row) - 1) if row[i] != row[i + 1])
+            check(flips == 1, f"unify: boundary {b} splits {flips} times")
+        # even columns: no front edge across a row is much shorter than the typical one
+        me = st.hair_object.data
+        mw = st.hair_object.matrix_world
+        lens = sorted((mw @ me.vertices[e.vertices[0]].co - mw @ me.vertices[e.vertices[1]].co).length
+                      for e in me.edges)
+        check(lens[len(lens) // 2] > 0.0, "unify: degenerate edges")
+        # off -> the old glued locks still build
+        st.unify = False
+        build.rebuild(g)
+        analyse(g, st, "unify/off", allow_tris=True)
+        st.unify = True
+    finally:
+        unify.build_unified = orig
+
+
 def test_new_features():
     """Head setup, drawing helpers, presets (incl. curl) and bevel topology."""
     from toon_hair_studio import draw, core, presets
@@ -698,6 +760,7 @@ def test_new_features():
     test_attach_stray()
     test_attach_embed()
     test_long_lock_twist()
+    test_unify()
 
     # density layout puts more loops at bends and tips
     prm = core.StrandParams(length_segments=12, tip_bias=0.5, bend_density=1.0)

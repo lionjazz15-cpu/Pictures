@@ -24,7 +24,7 @@ PARAM_KEYS = (
     "bevel", "bend_density", "curl_turns", "curl_radius", "curl_start", "wave_amp", "wave_freq",
     "lift", "puff", "puff_pos", "tip_flip", "roll", "layers", "layer_gap", "layer_shift",
     "layer_front_len", "layer_back_len", "layer_width", "layer_flip",
-    "cut_taper", "cut_enable", "cut_height", "plane_rows", "merge_overlaps", "auto_merge_roots", "head_follow",
+    "cut_taper", "cut_enable", "cut_height", "plane_rows", "unify", "merge_overlaps", "auto_merge_roots", "head_follow",
 )
 
 _building = False

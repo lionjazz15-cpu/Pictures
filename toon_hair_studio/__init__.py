@@ -308,6 +308,9 @@ class ToonHairSettings(bpy.types.PropertyGroup):
                                              "幅の比率で横に並べ直して1つにまとめ、重なりが解けた所から分岐させる")
     auto_merge_roots: BoolProperty(name="重なった根元を自動で結合", default=False, update=_upd,
                                    description="つないでいない房でも、根元が重なっていれば自動でつないでまとめる")
+    unify: BoolProperty(name="全体を一体化", default=True, update=_upd,
+                        description="グループ全体を1つのきれいなメッシュにする。触れ合う・重なる房は1つの断面に溶け合い、"
+                                    "離れる所できれいな股(2枚の四角形)で分かれる。オフで従来の房ごとの連結")
     plane_rows: BoolProperty(name="行の平面をそろえる", default=True, update=_upd,
                              description="つないだ房同士で、一番長い房の行の平面に隣の房の行を合わせる。"
                                          "長さの違うカーブをつないでも、つなぎ目の行がまっすぐそろう")
@@ -958,6 +961,7 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
                 sub.active = st.cut_enable
                 sub.prop(st, "cut_height", text="高さ")
             row = col.row(align=True)
+            row.prop(st, "unify", text="一体化", toggle=True, icon=ic('MESH_DATA'))
             row.prop(st, "connect", text="自動でつなぐ", toggle=True)
             row.prop(st, "mirror_x", toggle=True)
             row = col.row(align=True)
@@ -965,7 +969,8 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
             row.operator("toon_hair.unlink", text="", icon=ic('UNLINKED')).all = False
             col.operator("toon_hair.attach", text="刺したカーブを結合 (枝分かれ・遊び毛)", icon=ic('MOD_CURVE'))
             if st.links:
-                col.label(text=f"手動つなぎ {len(st.links)} か所 (自動より優先)", icon=ic('LINKED'))
+                col.label(text=f"手動つなぎ {len(st.links)} か所" + ("" if st.unify else " (自動より優先)"),
+                          icon=ic('LINKED'))
             col.row(align=True).prop(st, "backface", expand=True)
             tri = build.triangle_count(st.hair_object)
             box.label(text=f"三角形: {tri:,}", icon=ic('MESH_DATA'))
@@ -1129,8 +1134,12 @@ class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
         lay = self.layout
         lay.use_property_split = True
         lay.use_property_decorate = False
+        lay.prop(st, "unify")
+        if st.unify:
+            lay.label(text="触れ合う房は1つの面に溶け合い、離れる所できれいに分かれます", icon=ic('INFO'))
         box = lay.box()
-        box.label(text=f"手動でつなぐ ({len(st.links)} か所, 自動より優先)", icon=ic('LINKED'))
+        box.label(text=f"手動でつなぐ ({len(st.links)} か所" + (")" if st.unify else ", 自動より優先)"),
+                  icon=ic('LINKED'))
         box.label(text="編集モードで各カーブの点を選ぶ: 1点=根元から / 2点=その間", icon=ic('BLANK1'))
         row = box.row(align=True)
         row.operator("toon_hair.link_selected", icon=ic('LINKED'))
@@ -1140,11 +1149,13 @@ class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
         # settings that apply to manual and automatic joins alike
         lay.prop(st, "connect_style", expand=True)
         lay.prop(st, "plane_rows")
-        lay.prop(st, "merge_overlaps")
         lay.prop(st, "weld_dist")
-        lay.prop(st, "auto_merge_roots")
+        old = lay.column()
+        old.active = not st.unify                 # only the per-lock (non-unified) builder uses these
+        old.prop(st, "merge_overlaps")
+        old.prop(st, "auto_merge_roots")
         col = lay.column()
-        col.active = st.connect and len(st.links) == 0
+        col.active = st.connect and (st.unify or len(st.links) == 0)
         col.label(text="自動でつなぐ時の設定", icon=ic('BLANK1'))
         lay = col
         if st.connect_style == 'SMOOTH':
@@ -1152,7 +1163,9 @@ class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
         lay.prop(st, "order")
         lay.prop(st, "connect_ratio")
         lay.prop(st, "split")
-        lay.prop(st, "notch_soft")
+        sub = lay.column()
+        sub.active = not st.unify
+        sub.prop(st, "notch_soft")
         if st.connect_style == 'GROOVE':
             sub = lay.column()
             sub.enabled = st.backface == 'CLOSED'
