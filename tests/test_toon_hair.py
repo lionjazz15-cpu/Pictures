@@ -243,12 +243,14 @@ def test_attach_embed():
     me = st.hair_object.data
     check(len(me.polygons) < nf_before, "embed: buried part was not removed")
     check(islands(me) == 1, f"embed: curve not connected to its host ({islands(me)} pieces)")
-    analyse(g, st, "attach/embed", allow_tris=True)      # the bridge may need a few triangles
+    analyse(g, st, "attach/embed")         # the bridge is all quads
     after = {tuple(round(c_, 5) for c_ in v.co) for v in me.vertices}
     # the host is untouched: every vertex that changed belongs to the stray
     changed = set(host_before) - after
     stray_before = len(host_before) - g["host_verts"]
-    check(len(changed) <= stray_before, f"embed: host geometry changed ({len(changed)} verts moved)")
+    # allowed: the stray's own vertices, plus the few host vertices inside the
+    # hole the bridge replaces (they are removed, nothing else moves)
+    check(len(changed) <= stray_before + 8, f"embed: host geometry changed ({len(changed)} verts moved)")
     # the stray's tip is where it was and still maps to v = 1
     tip_local = st.hair_object.matrix_world.inverted() @ tip_before
     near = min(me.vertices, key=lambda v: (v.co - tip_local).length)

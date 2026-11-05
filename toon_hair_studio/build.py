@@ -384,6 +384,34 @@ def _unit_width(u, t):
     return sum(lk.widths[min(i, len(lk.widths) - 1)] for lk in u.locks)
 
 
+def _surface_exit(curve_ob, su, hu):
+    """Param along the stuck curve where its centre leaves the host lock
+    through the host's surface (front/back or side), measured in the host's
+    own cross-section frames - so the root ring of the embedded curve sits
+    right at the host's surface."""
+    st = curve_ob.toon_hair
+    half_t = 0.5 * st.thickness
+    rows = [(lk.frames[i], lk.widths[i]) for lk in hu.locks for i in range(len(lk.frames))]
+    inside_seen = False
+    for q, t in su.path:
+        (P, T, N, B), w = min(rows, key=lambda r: (r[0][0] - q).length)
+        if w <= 1e-6:
+            continue
+        x = (q - P).dot(B) / (0.5 * w)
+        y = (q - P).dot(N)
+        xc = min(abs(x), 1.0)
+        env = 1.0 - xc * xc
+        mid = st.curvature * env * w
+        front = mid + half_t * env * w
+        back = mid - half_t * env * w
+        inside = abs(x) <= 1.0 and back <= y <= front
+        if inside:
+            inside_seen = True
+        elif inside_seen:
+            return t
+    return None
+
+
 def _embed_curve(curve_ob, s_idx, units):
     """'Keep as is' attach: find the lock the curve is stuck in and where it
     comes out; the curve is then generated from just before that point, so
@@ -408,17 +436,10 @@ def _embed_curve(curve_ob, s_idx, units):
         return None
     h_idx = best[1]
     hu = units[h_idx]
-    t_out = None
-    for q, t in su.path:
-        dist, th2, _p = _nearest_on_path(hu.path, q)
-        # out of the host once the curve's centre is past the host's surface
-        # by a little: the root ring then still sits inside the host
-        if dist > 0.5 * _unit_width(hu, th2):
-            t_out = t
-            break
+    t_out = _surface_exit(curve_ob, su, hu)
     if t_out is None or t_out <= 0.02:
         return None
-    start = max(0.0, t_out - 0.04)
+    start = max(0.0, t_out - 0.01)
     links = curve_ob.toon_hair.links
     for i in range(len(links) - 1, -1, -1):
         if links[i].embed and links[i].stray_idx == s_idx:

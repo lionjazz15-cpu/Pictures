@@ -324,6 +324,7 @@ class Geo:
         self.face_uv = []      # per face: tuple of (u, v) per corner
         self.face_kind = []    # per face: 'F' front, 'B' back, 'S' side band / cap / wall
         self.face_mat = []     # per face: material slot
+        self.face_grid = []    # per face: (lock, row, column) for front strip faces, else None
         self.t = []            # root -> tip 0..1
         self.inner = []        # 1 = inner / back side
         self.head = []         # (azimuth, height, t)
@@ -336,6 +337,7 @@ class Geo:
         self.face_uv += other.face_uv
         self.face_kind += other.face_kind
         self.face_mat += other.face_mat
+        self.face_grid += other.face_grid
         self.t += other.t
         self.inner += other.inner
         self.head += other.head
@@ -350,11 +352,12 @@ class Geo:
         self.verts = [matrix @ v for v in self.verts]
         self.normals = [(nm @ n).normalized() for n in self.normals]
 
-    def add_face(self, f, uv, kind='S', mat=0):
+    def add_face(self, f, uv, kind='S', mat=0, grid=None):
         self.faces.append(tuple(f))
         self.face_uv.append(tuple(uv))
         self.face_kind.append(kind)
         self.face_mat.append(mat)
+        self.face_grid.append(grid)
 
     def seam_edges(self):
         """Edges between the front surface and everything else (back, bevel
@@ -1515,7 +1518,7 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
                 a0, b0 = uv_col(lk, i, ca), uv_col(lk, i, cb)
                 a1, b1 = uv_col(lk, i + 1, ca), uv_col(lk, i + 1, cb)
                 g.add_face((V('F', k, i, ca), V('F', k, i, cb), V('F', k, i + 1, cb), V('F', k, i + 1, ca)),
-                           (a0, b0, b1, a1), 'F')
+                           (a0, b0, b1, a1), 'F', grid=(k, i, min(ca, cb)))
                 if closed:
                     g.add_face((V('B', k, i, cb), V('B', k, i, ca), V('B', k, i + 1, ca), V('B', k, i + 1, cb)),
                                (b0, a0, a1, b1), 'B')
@@ -1831,9 +1834,9 @@ def weld_geo(g, dist, max_hole=16, root_t=0.02):
         merged -= 1
     if not merged:
         return 0
-    faces, uvs, kinds, mats = [], [], [], []
+    faces, uvs, kinds, mats, grids = [], [], [], [], []
     seen = {}
-    for f, uv, kind, mat in zip(g.faces, g.face_uv, g.face_kind, g.face_mat):
+    for f, uv, kind, mat, grid in zip(g.faces, g.face_uv, g.face_kind, g.face_mat, g.face_grid):
         nf, nuv = [], []
         for q, u in zip(f, uv):
             r = remap[q]
@@ -1851,12 +1854,14 @@ def weld_geo(g, dist, max_hole=16, root_t=0.02):
         uvs.append(tuple(nuv))
         kinds.append(kind)
         mats.append(mat)
+        grids.append(grid)
     dup_keys = {k for k, i in seen.items() if i is None}
     keep = [i for i, f in enumerate(faces) if tuple(sorted(f)) not in dup_keys]
     g.faces = [faces[i] for i in keep]
     g.face_uv = [uvs[i] for i in keep]
     g.face_kind = [kinds[i] for i in keep]
     g.face_mat = [mats[i] for i in keep]
+    g.face_grid = [grids[i] for i in keep]
     # fill small holes created by the stitch
     for loop in _boundary_loops(g.faces):
         if len(loop) > max_hole or any(g.t[q] <= root_t for q in loop):
@@ -1874,8 +1879,15 @@ def weld_geo(g, dist, max_hole=16, root_t=0.02):
             g.add_face((loop[lo], loop[lo + 1], loop[hi]),
                        [(0.5, g.t[q]) for q in (loop[lo], loop[lo + 1], loop[hi])])
     orient_consistent(g)
-    # drop vertices no face uses any more
+    compact_unused(g)
+    return merged
+
+
+def compact_unused(g):
+    """Drop vertices no face uses any more (keeps per-vertex lists in sync)."""
     used = sorted({q for f in g.faces for q in f})
+    if len(used) == len(g.verts):
+        return
     new = {old: i for i, old in enumerate(used)}
     g.verts = [g.verts[q] for q in used]
     g.t = [g.t[q] for q in used]
@@ -1884,7 +1896,6 @@ def weld_geo(g, dist, max_hole=16, root_t=0.02):
     if g.normals:
         g.normals = [g.normals[q] for q in used]
     g.faces = [tuple(new[q] for q in f) for f in g.faces]
-    return merged
 
 
 def _relax(g, weights, iterations, lam=0.5, mu=-0.53):
@@ -2049,11 +2060,84 @@ def _zip_loops(g, A, B):
     return faces
 
 
+def _bridge_cost(g, A, B):
+    n = len(A)
+    best = None
+    for rev in (False, True):
+        L = B[::-1] if rev else B
+        for r in range(n):
+            cost = sum((g.verts[A[k]] - g.verts[L[(k + r) % n]]).length for k in range(n))
+            if best is None or cost < best:
+                best = cost
+    return best
+
+
+def _bridge_equal(g, A, B):
+    """Quads between two loops with the same vertex count, using the
+    rotation / direction of B that keeps the bridge shortest (no twist)."""
+    n = len(A)
+    best = None
+    for rev in (False, True):
+        L = B[::-1] if rev else B
+        for r in range(n):
+            cost = sum((g.verts[A[k]] - g.verts[L[(k + r) % n]]).length for k in range(n))
+            if best is None or cost < best[0]:
+                best = (cost, rev, r)
+    _c, rev, r = best
+    L = B[::-1] if rev else B
+    L = [L[(k + r) % n] for k in range(n)]
+    return [(A[k], A[(k + 1) % n], L[(k + 1) % n], L[k]) for k in range(n)]
+
+
+def _grid_patch(g, front, C, ring, ring_w):
+    """A rows x columns window of the host's front grid around the root ring
+    whose border has exactly as many vertices as the ring (2 * (rows +
+    columns)). The window centred over the ring and closest to square is
+    used, so the bridge quads fan out evenly instead of forming slivers."""
+    ring_n = len(ring)
+    grid = {g.face_grid[fi]: fi for fi in front if g.face_grid[fi] is not None}
+    if not grid or ring_n % 2:
+        return None
+
+    def cen(fi):
+        f = g.faces[fi]
+        return sum((g.verts[q] for q in f), Vector()) / len(f)
+    near = min(grid.values(), key=lambda fi: (cen(fi) - C).length)
+    k0, i0, c0 = g.face_grid[near]
+    ncol = 1 + max(c for (k, _i, c) in grid if k == k0)
+    f = g.faces[near]
+    col_w = max((g.verts[f[0]] - g.verts[f[1]]).length, (g.verts[f[2]] - g.verts[f[3]]).length, 1e-6)
+    half = ring_n // 2
+    best = None
+    for kc in range(1, min(ncol, half - 1) + 1):
+        m = half - kc
+        for di in range(-1, m + 1):
+            for dc in range(-1, kc + 1):
+                cells = [(k0, i0 - di + a, c0 - dc + b) for a in range(m) for b in range(kc)]
+                if not all(cell in grid for cell in cells):
+                    continue
+                fis = [grid[cell] for cell in cells]
+                holes = _boundary_loops([g.faces[fi] for fi in fis])
+                if len(holes) != 1 or len(holes[0]) != ring_n:
+                    continue
+                # centred over the ring, as square as possible: the bridge
+                # then fans out evenly from the hole's sides to the ring
+                cc = sum((cen(fi) for fi in fis), Vector()) / len(fis)
+                score = (cc - C).length + abs(kc - m) * col_w * 0.6
+                if best is None or score < best[0]:
+                    best = (score, fis)
+    return best[1] if best else None
+
+
 def bridge_embedded(g, pieces, hosts):
-    """Connect embedded curves to their host: open a small hole in the host's
-    front surface right over the curve's root ring and bridge the hole to
-    the ring. Host and curve keep their shape and UVs; only the few host
-    faces over the root are replaced by the bridge."""
+    """Connect embedded curves to their host: open a hole in the host's front
+    surface right over the curve's root ring and bridge the hole to the ring.
+
+    The hole is a rows x columns window of the host's grid with exactly as
+    many border vertices as the root ring, so the bridge is all quads. Host
+    and curve keep their shape and UVs; only the faces of that window are
+    replaced. If no such window fits, a nearby patch is bridged with a
+    quad/triangle zip instead."""
     remove = set()
     adds = []
     for srcs, mir, li, v0, v1, f0, f1 in pieces:
@@ -2073,6 +2157,7 @@ def bridge_embedded(g, pieces, hosts):
         ring = min(loops, key=lambda L: sum(g.t[q] for q in L) / len(L))
         C = sum((g.verts[q] for q in ring), Vector()) / len(ring)
         rr = sum((g.verts[q] - C).length for q in ring) / len(ring)
+        ring_w = max((g.verts[a] - g.verts[b]).length for a in ring for b in ring)
 
         def cen(fi):
             f = g.faces[fi]
@@ -2080,14 +2165,6 @@ def bridge_embedded(g, pieces, hosts):
         front = [fi for fi in range(hf0, hf1) if g.face_kind[fi] == 'F' and fi not in remove]
         if not front:
             continue
-        patch = [fi for fi in front if (cen(fi) - C).length <= rr * 1.1]
-        if not patch:
-            patch = [min(front, key=lambda fi: (cen(fi) - C).length)]
-        holes = _boundary_loops([g.faces[fi] for fi in patch])
-        if len(holes) != 1:
-            continue
-        hole = holes[0]
-        # don't cut through the host's own border (sheet edge / notch)
         host_edges = {}
         for fi in range(hf0, hf1):
             f = g.faces[fi]
@@ -2095,11 +2172,27 @@ def bridge_embedded(g, pieces, hosts):
                 u, v = f[a], f[(a + 1) % len(f)]
                 k = (u, v) if u < v else (v, u)
                 host_edges[k] = host_edges.get(k, 0) + 1
-        if any(host_edges.get((min(u, v), max(u, v)), 0) < 2
-               for u, v in zip(hole, hole[1:] + hole[:1])):
-            continue
-        remove.update(patch)
-        adds += _zip_loops(g, hole, ring)
+
+        def interior(loop):
+            return all(host_edges.get((min(u, v), max(u, v)), 0) >= 2
+                       for u, v in zip(loop, loop[1:] + loop[:1]))
+        patch = _grid_patch(g, front, C, ring, ring_w)
+        hole = None
+        if patch:
+            holes = _boundary_loops([g.faces[fi] for fi in patch])
+            if len(holes) == 1 and len(holes[0]) == len(ring) and interior(holes[0]):
+                hole = holes[0]
+                remove.update(patch)
+                adds += _bridge_equal(g, hole, ring)
+        if hole is None:
+            patch = [fi for fi in front if (cen(fi) - C).length <= rr * 1.1]
+            if not patch:
+                patch = [min(front, key=lambda fi: (cen(fi) - C).length)]
+            holes = _boundary_loops([g.faces[fi] for fi in patch])
+            if len(holes) != 1 or not interior(holes[0]):
+                continue
+            remove.update(patch)
+            adds += _zip_loops(g, holes[0], ring)
     if not remove:
         return 0
     uv_of = {}
@@ -2111,9 +2204,11 @@ def bridge_embedded(g, pieces, hosts):
     g.face_uv = [g.face_uv[i] for i in keep]
     g.face_kind = [g.face_kind[i] for i in keep]
     g.face_mat = [g.face_mat[i] for i in keep]
+    g.face_grid = [g.face_grid[i] for i in keep]
     for f in adds:
         g.add_face(f, [uv_of.get(q, (0.5, 0.0)) for q in f], 'S')
     orient_consistent(g)
+    compact_unused(g)          # the hole's inner vertices are no longer used
     return len(adds)
 
 
