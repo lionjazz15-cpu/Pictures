@@ -24,7 +24,7 @@ PARAM_KEYS = (
     "bevel", "bend_density", "curl_turns", "curl_radius", "curl_start", "wave_amp", "wave_freq",
     "lift", "puff", "puff_pos", "tip_flip", "roll", "layers", "layer_gap", "layer_shift",
     "layer_front_len", "layer_back_len", "layer_width", "layer_flip",
-    "cut_taper", "cut_enable", "cut_height", "plane_rows",
+    "cut_taper", "cut_enable", "cut_height", "plane_rows", "merge_overlaps", "auto_merge_roots",
 )
 
 _building = False
@@ -323,6 +323,150 @@ def on_spline_removed(curve_ob, idx):
             l.a -= 1
         if l.b > idx:
             l.b -= 1
+
+
+# --------------------------------------------------------------------------
+# attach a curve stuck into a lock (branch / stray hair)
+# --------------------------------------------------------------------------
+
+def _units_of(curve_ob):
+    """One unit per spline (no mirror / layers), for geometric queries."""
+    import random
+    st = curve_ob.toon_hair
+    prm = params_from(st)
+    center = center_of(st)
+    mw = curve_ob.matrix_world
+    samples = [core.sample_spline(sp, mw) for sp in curve_ob.data.splines]
+    valid = [smp for smp in samples if len(smp) >= 2]
+    prm.density_profile = core.density_profile(valid, prm) if valid else None
+    units = []
+    for i, smp in enumerate(samples):
+        u = core.make_unit(smp, center, prm, False, float(i), random.Random(i)) if len(smp) >= 2 else None
+        units.append(u)
+    return units, center
+
+
+def _nearest_on_path(path, q):
+    best = (1e30, 0.0, None)
+    for (pa, ta), (pb, tb) in zip(path, path[1:]):
+        d = pb - pa
+        L2 = d.length_squared
+        f = 0.0 if L2 < 1e-18 else min(max((q - pa).dot(d) / L2, 0.0), 1.0)
+        p = pa + d * f
+        dist = (q - p).length
+        if dist < best[0]:
+            best = (dist, ta + (tb - ta) * f, p)
+    return best
+
+
+def _unit_width(u, t):
+    """Total width of a unit (all sub-locks) at param t."""
+    lk0 = u.locks[0]
+    ts = lk0.ts
+    i = min(range(len(ts)), key=lambda k: abs(ts[k] - t))
+    return sum(lk.widths[min(i, len(lk.widths) - 1)] for lk in u.locks)
+
+
+def attach_curves(curve_ob, targets):
+    """Attach guides stuck into a lock: extend each one back along its host
+    to the host's root (so they share the trunk) and join it to the host
+    from the root to where it comes out. Returns list of (target, host)."""
+    units, center = _units_of(curve_ob)
+    splines = curve_ob.data.splines
+    mw = curve_ob.matrix_world
+    inv = mw.inverted()
+    done = []
+    for s_idx in targets:
+        su = units[s_idx] if s_idx < len(units) else None
+        if su is None:
+            continue
+        root = su.path[0][0]
+        ws = _unit_width(su, 0.05)
+        best = None
+        for h_idx, hu in enumerate(units):
+            if hu is None or h_idx == s_idx or h_idx in targets:
+                continue
+            dist, th, ph = _nearest_on_path(hu.path, root)
+            wh = _unit_width(hu, th)
+            if dist <= 0.5 * (wh + ws) * 1.1:
+                score = dist / max(wh, 1e-6)
+                if best is None or score < best[0]:
+                    best = (score, h_idx, th, ph, wh)
+        if best is None:
+            continue
+        _score, h_idx, th, ph, wh = best
+        hu = units[h_idx]
+        sp = splines[s_idx]
+        # 1) extend back along the host to its root (shared trunk)
+        if th > 0.06 and sp.type == 'BEZIER':
+            off = root - ph
+            new_pts = []
+            for f in (0.0, 0.5):
+                t = th * f
+                p, _tan = core._path_at(hu.path, t)
+                scale = _unit_width(hu, t) / max(wh, 1e-6)
+                new_pts.append(inv @ (p + off * min(scale, 1.0)))
+            bps = sp.bezier_points
+            old = [(bp.co.copy(), bp.handle_left.copy(), bp.handle_right.copy(), bp.handle_left_type,
+                    bp.handle_right_type, bp.radius, bp.tilt) for bp in bps]
+            bps.add(len(new_pts))
+            r0 = old[0][5]
+            for k, co in enumerate(new_pts):
+                bp = bps[k]
+                bp.handle_left_type = bp.handle_right_type = 'AUTO'
+                bp.co = co
+                bp.radius, bp.tilt = r0, old[0][6]
+            for k, (co, hl, hr, tl, tr, rad, tilt) in enumerate(old):
+                bp = bps[k + len(new_pts)]
+                bp.handle_left_type, bp.handle_right_type = 'FREE', 'FREE'
+                bp.co, bp.handle_left, bp.handle_right = co, hl, hr
+                bp.handle_left_type, bp.handle_right_type = tl, tr
+                bp.radius, bp.tilt = rad, tilt
+            bps[len(new_pts)].handle_left_type = bps[len(new_pts)].handle_right_type = 'AUTO'
+        # 2) where does it come out of the host?
+        units2, _c = _units_of(curve_ob)
+        su, hu = units2[s_idx], units2[h_idx]
+        t_out = 0.8
+        inside_seen = False
+        for q, t in su.path:
+            dist, th2, _p = _nearest_on_path(hu.path, q)
+            lim = 0.5 * (_unit_width(hu, th2) + _unit_width(su, t)) * 0.95
+            if dist <= lim:
+                inside_seen = True
+            elif inside_seen and t > 0.05:
+                t_out = t
+                break
+        t_end = min(t_out + 0.04, 0.95)
+        # 3) join to the host (and to the neighbour on the other side when the
+        #    curve sits between two joined locks)
+        links = curve_ob.toon_hair.links
+        partners = {h_idx}
+        linked = {}
+        for l in links:
+            linked.setdefault(l.a, set()).add(l.b)
+            linked.setdefault(l.b, set()).add(l.a)
+        if h_idx in linked:
+            az = {i: center.head_coord(u.mid)[0] for i, u in enumerate(units2) if u is not None}
+            comp, stack = set(), [h_idx]
+            while stack:
+                x = stack.pop()
+                if x in comp:
+                    continue
+                comp.add(x)
+                stack += list(linked.get(x, ()))
+            order = sorted(comp | {s_idx}, key=lambda i: az[i])
+            k = order.index(s_idx)
+            for nb in (order[k - 1] if k > 0 else None, order[k + 1] if k + 1 < len(order) else None):
+                if nb is not None:
+                    partners.add(nb)
+        for nb in partners:
+            for i in range(len(links) - 1, -1, -1):
+                if {links[i].a, links[i].b} == {s_idx, nb}:
+                    links.remove(i)
+            l = links.add()
+            l.a, l.b, l.t0, l.t1 = min(s_idx, nb), max(s_idx, nb), 0.0, t_end
+        done.append((s_idx, h_idx))
+    return done
 
 
 def check_connections(ob, root_t=0.02):

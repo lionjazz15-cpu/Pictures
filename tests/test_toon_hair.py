@@ -195,6 +195,101 @@ class _PanelSelf:
         self.layout = MockLayout()
 
 
+def test_attach_stray():
+    """A thin curve stuck into a lock attaches as a stray hair / branch."""
+    from toon_hair_studio import draw
+    center = bpy.data.objects[draw.CENTER_NAME]
+    c = center.matrix_world.to_translation()
+    g = draw.new_group(bpy.context, 'CUSTOM', center)
+    st = g.toon_hair
+    st.width, st.root_ratio, st.bulge_pos = 0.045, 0.5, 0.35
+    inv = g.matrix_world.inverted()
+    root = c + Vector((0.0, -0.04, 0.095))
+    for dx in (-0.032, 0.0, 0.032):
+        pts = [root + Vector((dx * 0.3, 0, 0)), c + Vector((dx * 0.6, -0.088, 0.06)),
+               c + Vector((dx, -0.106, 0.0)), c + Vector((dx * 1.15, -0.11, -0.06)),
+               c + Vector((dx * 1.3, -0.105, -0.12))]
+        draw.add_bezier(g.data, [inv @ p for p in pts])
+    for a_, b_ in ((0, 1), (1, 2)):
+        l = st.links.add()
+        l.a, l.b, l.t0, l.t1 = a_, b_, 0.0, 0.6
+    stray = [c + Vector((0.004, -0.095, 0.045)), c + Vector((0.01, -0.108, 0.0)),
+             c + Vector((0.03, -0.13, -0.05)), c + Vector((0.06, -0.15, -0.09))]
+    sp = draw.add_bezier(g.data, [inv @ p for p in stray])
+    for bp in sp.bezier_points:
+        bp.radius = 0.4
+    build.rebuild(g)
+    check(islands(st.hair_object.data) == 2, "attach: stray should start separate")
+    n_before = len(g.data.splines[3].bezier_points)
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    g.select_set(True)
+    bpy.context.view_layer.objects.active = g
+    res = bpy.ops.toon_hair.attach()
+    check(res == {'FINISHED'}, "attach operator failed")
+    sp = g.data.splines[3]
+    check(len(sp.bezier_points) > n_before, "attach: stray was not extended to the host root")
+    r = g.matrix_world @ sp.bezier_points[0].co
+    check((r - root).length < 0.02, f"attach: extended root {(r - root).length:.3f} from host root")
+    check(any(3 in (l.a, l.b) for l in st.links), "attach: no link for the stray")
+    check(islands(st.hair_object.data) == 1, "attach: stray not merged into the sheet")
+    analyse(g, st, "attach")
+    # division sliders switch the LOD to custom
+    st.lod = 'MID'
+    st.profile_segments = 3
+    check(st.lod == 'CUSTOM' and st.profile_segments == 3, "division slider did not switch LOD to custom")
+    st.lod = 'LOW'
+    check((st.length_segments, st.profile_segments) == th_lod_low(), "LOD preset did not set divisions")
+
+
+def th_lod_low():
+    import toon_hair_studio as th
+    return th.LOD_TABLE['LOW']
+
+
+def test_buried_lock():
+    """3 manually linked guides from one root with a thin middle lock: the
+    overlapping root part is laid side by side (no buried lock) and the
+    locks branch apart below."""
+    from toon_hair_studio import core, draw
+    center = bpy.data.objects[draw.CENTER_NAME]
+    c = center.matrix_world.to_translation()
+    g = draw.new_group(bpy.context, 'CUSTOM', center)
+    st = g.toon_hair
+    st.width, st.root_ratio, st.bulge_pos = 0.05, 0.5, 0.35
+    inv = g.matrix_world.inverted()
+    root = c + Vector((0.0, -0.035, 0.095))
+    for dx, rad in ((-0.03, 1.0), (0.0, 0.45), (0.03, 1.0)):
+        pts = [root, c + Vector((dx * 0.5, -0.085, 0.06)), c + Vector((dx, -0.105, 0.0)),
+               c + Vector((dx * 1.2, -0.11, -0.06)), c + Vector((dx * 1.4, -0.105, -0.12))]
+        sp = draw.add_bezier(g.data, [inv @ p for p in pts])
+        for bp in sp.bezier_points:
+            bp.radius = rad
+    for a_, b_ in ((0, 1), (1, 2)):
+        l = st.links.add()
+        l.a, l.b, l.t0, l.t1 = a_, b_, 0.0, 0.55
+    for merge in (False, True):
+        st.merge_overlaps = merge
+        build.rebuild(g)
+        analyse(g, st, f"buried/merge{merge}")
+        check(islands(st.hair_object.data) == 1, f"buried/merge{merge}: not one piece")
+    # unit level: after tiling, neighbours no longer overlap near the root
+    hair, _o = build.generate(g, world=True, with_outline=False)
+    prm = build.params_from(st)
+    cen = build.center_of(st)
+    import random
+    smps = [core.sample_spline(sp, g.matrix_world) for sp in g.data.splines]
+    prm.density_profile = core.density_profile(smps, prm)
+    locks = []
+    for n, smp in enumerate(smps):
+        locks += core.make_unit(smp, cen, prm, False, float(n), random.Random(n)).locks
+    locks.sort(key=lambda lk: cen.head_coord(lk.frames[3][0])[0])
+    before = min(core.overlap_ratio(locks[b], locks[b + 1], 1) for b in range(2))
+    core.tile_root_overlaps(locks)
+    after = min(core.overlap_ratio(locks[b], locks[b + 1], 1) for b in range(2))
+    check(before < 0.9 and after > 0.99, f"tiling did not resolve the overlap: {before:.2f} -> {after:.2f}")
+
+
 def test_ui_draw():
     """Run every panel's draw() against a validating mock layout."""
     import toon_hair_studio as th
@@ -512,6 +607,8 @@ def test_new_features():
     test_uv_seams()
     test_plane_rows_and_weld()
     test_ui_draw()
+    test_buried_lock()
+    test_attach_stray()
 
     # density layout puts more loops at bends and tips
     prm = core.StrandParams(length_segments=12, tip_bias=0.5, bend_density=1.0)

@@ -100,6 +100,15 @@ def _suspended():
         _suspend_update = prev
 
 
+def _upd_segments(self, context):
+    """Editing the division counts by hand switches the LOD to Custom."""
+    if not _suspend_update and self.lod in LOD_TABLE and \
+            LOD_TABLE[self.lod] != (self.length_segments, self.profile_segments):
+        with _suspended():
+            self.lod = 'CUSTOM'
+    _upd(self, context)
+
+
 def _upd_lod(self, context):
     if self.lod in LOD_TABLE:
         with _suspended():
@@ -146,8 +155,10 @@ class ToonHairSettings(bpy.types.PropertyGroup):
                ('HIGH', "High", "長さ20 × 断面6"),
                ('CUSTOM', "Custom", "手動")],
         default='MID', update=_upd_lod)
-    length_segments: IntProperty(name="長さ分割", default=12, min=2, max=64, update=_upd)
-    profile_segments: IntProperty(name="断面分割", default=4, min=1, max=16, update=_upd)
+    length_segments: IntProperty(name="横の分割 (長さ方向)", default=12, min=2, max=64, update=_upd_segments,
+                                 description="房の長さ方向に並ぶ輪切りの数 (横に走るエッジの本数)")
+    profile_segments: IntProperty(name="縦の分割 (幅方向)", default=4, min=1, max=16, update=_upd_segments,
+                                  description="房の幅方向の分割数 (縦に走るエッジの本数)。厚みありでは表と裏それぞれ")
     tip_bias: FloatProperty(name="毛先に分割を寄せる", default=0.3, min=0.0, max=1.0, update=_upd)
     bend_density: FloatProperty(name="曲がりに分割を寄せる", default=0.5, min=0.0, max=3.0, update=_upd,
                                 description="カーブが曲がっている所ほどループを細かくする (グループ内で共通なので連結しても行がそろう)")
@@ -282,6 +293,11 @@ class ToonHairSettings(bpy.types.PropertyGroup):
                              subtype='DISTANCE', unit='LENGTH', update=_upd,
                              description="つないでいない房どうしの開いた縁が、この距離以内なら縫い合わせる (0で無効)。"
                                          "同じ塊の中は溶接しないので切れ込みは閉じない")
+    merge_overlaps: BoolProperty(name="埋もれた房を並べて結合", default=True, update=_upd,
+                                 description="つないだ房どうしが根元側で重なって埋もれている所は、"
+                                             "幅の比率で横に並べ直して1つにまとめ、重なりが解けた所から分岐させる")
+    auto_merge_roots: BoolProperty(name="重なった根元を自動で結合", default=False, update=_upd,
+                                   description="つないでいない房でも、根元が重なっていれば自動でつないでまとめる")
     plane_rows: BoolProperty(name="行の平面をそろえる", default=True, update=_upd,
                              description="つないだ房同士で、一番長い房の行の平面に隣の房の行を合わせる。"
                                          "長さの違うカーブをつないでも、つなぎ目の行がまっすぐそろう")
@@ -706,6 +722,43 @@ class TOONHAIR_OT_unlink(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class TOONHAIR_OT_attach(bpy.types.Operator):
+    bl_idname = "toon_hair.attach"
+    bl_label = "刺したカーブを結合"
+    bl_description = ("房に刺したカーブを、その房から生える枝分かれ・遊び毛として結合します。"
+                      "途中から刺したカーブは親の房に沿って根元まで延長し、抜け出す所から分岐させます。"
+                      "編集モードで点を選んだカーブが対象 (選んでいなければ細い毛を自動で探す)")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        g = active_group(context)
+        return g is not None and len(g.data.splines) >= 2
+
+    def execute(self, context):
+        g = active_group(context)
+        was_edit = context.mode == 'EDIT_CURVE'
+        if was_edit:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        targets = [i for i, _ts in _selected_splines(g)] if was_edit else []
+        if not targets:
+            linked = {x for l in g.toon_hair.links for x in (l.a, l.b)}
+            for i, sp in enumerate(g.data.splines):
+                pts = sp.bezier_points if sp.type == 'BEZIER' else sp.points
+                rad = sum(p.radius for p in pts) / max(len(pts), 1)
+                if rad < 0.75 and i not in linked:
+                    targets.append(i)
+        done = build.attach_curves(g, targets) if targets else []
+        build.rebuild(g)
+        if was_edit:
+            bpy.ops.object.mode_set(mode='EDIT')
+        if not done:
+            self.report({'WARNING'}, "結合できるカーブがありません (房の中に刺さっているカーブを選んでください)")
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"{len(done)} 本を結合しました")
+        return {'FINISHED'}
+
+
 class TOONHAIR_OT_check(bpy.types.Operator):
     bl_idname = "toon_hair.check"
     bl_label = "つながりチェック"
@@ -873,6 +926,9 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
             row.prop(st, "auto_update", text="", icon=ic('FILE_REFRESH'))
             col = box.column(align=True)
             col.row(align=True).prop(st, "lod", expand=True)
+            sub = col.column(align=True)
+            sub.prop(st, "length_segments", text="横の分割")
+            sub.prop(st, "profile_segments", text="縦の分割")
             col.prop(st, "section_preset", text="断面")
             col.prop(st, "width")
             col.prop(st, "thickness")
@@ -891,6 +947,7 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
             row = col.row(align=True)
             row.operator("toon_hair.link_selected", text="選択点をつなぐ", icon=ic('LINKED'))
             row.operator("toon_hair.unlink", text="", icon=ic('UNLINKED')).all = False
+            col.operator("toon_hair.attach", text="刺したカーブを結合 (枝分かれ・遊び毛)", icon=ic('MOD_CURVE'))
             if st.links:
                 col.label(text=f"手動つなぎ {len(st.links)} か所 (自動より優先)", icon=ic('LINKED'))
             col.row(align=True).prop(st, "backface", expand=True)
@@ -925,7 +982,6 @@ class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
         lay.use_property_decorate = False
         lay.row().prop(st, "lod", expand=True)
         col = lay.column(align=True)
-        col.enabled = st.lod == 'CUSTOM'
         col.prop(st, "length_segments")
         col.prop(st, "profile_segments")
         lay.prop(st, "tip_bias")
@@ -1063,12 +1119,17 @@ class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
         row.operator("toon_hair.link_selected", icon=ic('LINKED'))
         row.operator("toon_hair.unlink", text="解除", icon=ic('UNLINKED')).all = False
         row.operator("toon_hair.unlink", text="全部", icon=ic('X')).all = True
-        col = lay.column()
-        col.active = st.connect and len(st.links) == 0
-        lay = col
+        box.operator("toon_hair.attach", text="刺したカーブを結合 (枝分かれ・遊び毛)", icon=ic('MOD_CURVE'))
+        # settings that apply to manual and automatic joins alike
         lay.prop(st, "connect_style", expand=True)
         lay.prop(st, "plane_rows")
+        lay.prop(st, "merge_overlaps")
         lay.prop(st, "weld_dist")
+        lay.prop(st, "auto_merge_roots")
+        col = lay.column()
+        col.active = st.connect and len(st.links) == 0
+        col.label(text="自動でつなぐ時の設定", icon=ic('BLANK1'))
+        lay = col
         if st.connect_style == 'SMOOTH':
             lay.prop(st, "smooth_iterations")
         lay.prop(st, "order")
@@ -1178,6 +1239,7 @@ classes = (
     TOONHAIR_OT_sample,
     TOONHAIR_OT_link_selected,
     TOONHAIR_OT_unlink,
+    TOONHAIR_OT_attach,
     TOONHAIR_OT_check,
     TOONHAIR_OT_rebuild,
     TOONHAIR_OT_bake,

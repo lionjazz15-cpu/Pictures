@@ -212,6 +212,7 @@ class TOONHAIR_OT_draw(bpy.types.Operator):
     bl_idname = "toon_hair.draw"
     bl_label = "頭に描く"
     bl_description = ("頭の上をドラッグして毛束を描きます。"
+                      "Shift+ドラッグで房に刺した遊び毛・枝を描いて自動で結合 / "
                       "Ctrl+クリックで房を消す / Ctrl+Z で直前の房を取り消し / Esc・右クリックで終了")
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -281,8 +282,14 @@ class TOONHAIR_OT_draw(bpy.types.Operator):
             return
         ctrl = stroke_to_controls(stroke, max_points=8, min_points=3, spacing=self.R * 0.35)
         inv = g.matrix_world.inverted()
-        add_bezier(g.data, [inv @ p for p in ctrl])
-        self.added.append(len(g.data.splines) - 1)
+        sp = add_bezier(g.data, [inv @ p for p in ctrl])
+        idx = len(g.data.splines) - 1
+        self.added.append(idx)
+        if self.stray:
+            # Shift+drag: a thin stray hair, attached to the lock it starts in
+            for bp in sp.bezier_points:
+                bp.radius = 0.4
+            build.attach_curves(g, [idx])
         build.rebuild(g)
 
     def _delete_near(self, context, event):
@@ -351,12 +358,13 @@ class TOONHAIR_OT_draw(bpy.types.Operator):
         self.stroke = []
         self.added = []
         self.drawing = False
+        self.stray = False
         _draw_points.clear()
         if _draw_handle is None:
             _draw_handle = bpy.types.SpaceView3D.draw_handler_add(_draw_callback, (), 'WINDOW', 'POST_VIEW')
         context.window_manager.modal_handler_add(self)
         context.area.header_text_set(
-            f"[{g.name}] ドラッグ: 描く | Ctrl+クリック: 消す | Ctrl+Z: 取り消し | "
+            f"[{g.name}] ドラッグ: 描く | Shift+ドラッグ: 房に刺して遊び毛/枝 | Ctrl+クリック: 消す | Ctrl+Z: 取り消し | "
             "中ボタン/ホイール: 視点 | Esc・右クリック・Enter: 終了")
         return {'RUNNING_MODAL'}
 
@@ -393,6 +401,7 @@ class TOONHAIR_OT_draw(bpy.types.Operator):
                     self._delete_near(context, event)
                     return {'RUNNING_MODAL'}
                 self.drawing = True
+                self.stray = event.shift
                 self.stroke = []
                 self._add_point(context, event)
                 if not self.stroke:          # started off the head: ignore

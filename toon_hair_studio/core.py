@@ -390,6 +390,8 @@ class StrandParams:
     order = 'AZIMUTH'         # AZIMUTH / CURVE
     connect_style = 'SMOOTH'  # SMOOTH (なめらか) / GROOVE (毛束の溝)
     plane_rows = True         # joined guides share row planes (HairHarpy-style)
+    merge_overlaps = True     # joined locks that overlap from the root are laid side by side there
+    auto_merge_roots = False  # also join unjoined locks whose roots overlap
     smooth_iterations = 4
     cut_taper = 0.05          # 'CUT' tips: narrowing towards the hem
     cut_enable = False        # trim every guide at a horizontal plane
@@ -881,6 +883,143 @@ def align_run(run, band_ends, reach_scale=4.0):
             if nu is not None:
                 run[j] = nu
     return run, ref_side
+
+
+def _order_dir(la, lb, i):
+    Ba = la.frames[i][3] * (-1.0 if la.rev else 1.0)
+    Bb = lb.frames[i][3] * (-1.0 if lb.rev else 1.0)
+    d = Ba + Bb
+    return d.normalized() if d.length > EPS else Ba
+
+
+def overlap_ratio(la, lb, i):
+    """Side-by-side spacing of two neighbouring locks at row i, in units of
+    their mean half... i.e. 1 = edges just touch, < 1 = they overlap."""
+    d = _order_dir(la, lb, i)
+    sep = (lb.frames[i][0] - la.frames[i][0]).dot(d)
+    half = 0.5 * (la.widths[i] + lb.widths[i])
+    return sep / half if half > EPS else 1.0
+
+
+def overlap_runs(units, prm, root_rows=3):
+    """Chain units whose roots overlap (penetrating locks growing from about
+    the same spot). Returns [(units, {b: (0, t_end)})]: each boundary is
+    joined from the root until shortly after the locks stop overlapping."""
+    seq = sorted(units, key=lambda u: u.az)
+    if len(seq) > 2:
+        gaps = [((seq[(i + 1) % len(seq)].az - seq[i].az) % 1.0, i) for i in range(len(seq))]
+        _g, i = max(gaps)
+        seq = seq[i + 1:] + seq[:i + 1]
+    runs = []
+    cur, ranges = [], {}
+    for u in seq:
+        if cur:
+            la, lb = cur[-1].locks[-1], u.locks[0]
+            rc = min(len(la.frames), len(lb.frames)) - (1 if prm.tip_mode == 'POINT' else 0)
+            near = min(abs(overlap_ratio(la, lb, i)) for i in range(min(root_rows, rc)))
+            touching = (la.frames[0][0] - lb.frames[0][0]).length < 0.75 * (la.widths[1] + lb.widths[1])
+            if near < 0.9 and touching:
+                sep_row = rc - 2
+                for i in range(rc):
+                    if overlap_ratio(la, lb, i) >= 1.0:
+                        sep_row = i
+                        break
+                end_row = min(sep_row + 1, rc - 2)
+                ranges[len(cur) - 1] = (0.0, 0.5 * (la.ts[end_row] + lb.ts[end_row]))
+                cur.append(u)
+                continue
+            runs.append((cur, ranges))
+        cur, ranges = [u], {}
+    if cur:
+        runs.append((cur, ranges))
+    return runs
+
+
+def tile_root_overlaps(locks, transition=2, max_spread=0.7, limits=None):
+    """Where neighbouring locks of a sheet overlap from the root down, lay
+    them out side by side across their combined span (slots proportional to
+    their widths, on one shared line), then blend back to their own layout
+    over a few rows. Penetrating / buried locks become one merged lock that
+    branches apart where the guides separate.
+
+    Only clusters of consecutive overlapping locks that run roughly the same
+    way are tiled (the outermost tangents within ~45 degrees, cos >=
+    max_spread); fans such as a crown whorl are left alone."""
+    K = len(locks)
+    if K < 2:
+        return
+    rc = min(len(lk.frames) for lk in locks)
+    # limits[b]: last joined row of boundary b - past it the locks are apart
+    # (e.g. a stray that came out now lies ON TOP of a neighbour)
+    over = [[(limits is None or i <= limits[b]) and overlap_ratio(locks[b], locks[b + 1], i) < 1.0
+             for b in range(K - 1)] for i in range(rc)]
+    rows = []
+    for i in range(rc):
+        if any(over[i]):
+            rows.append(i)
+        else:
+            break
+    if not rows:
+        return
+    i_sep = rows[-1] + 1
+    for i in range(min(rc, i_sep + transition)):
+        m = 1.0 if i < i_sep else 1.0 - (i - i_sep + 1) / (transition + 1)
+        m = m * m * (3.0 - 2.0 * m)
+        # clusters of consecutive overlapping locks (use the last overlapping
+        # row's clusters while blending out)
+        flags = over[min(i, i_sep - 1)]
+        clusters, cur = [], [0]
+        for b in range(K - 1):
+            if flags[b]:
+                cur.append(b + 1)
+            else:
+                clusters.append(cur)
+                cur = [b + 1]
+        clusters.append(cur)
+        for cl in clusters:
+            if len(cl) < 2:
+                continue
+            group = [locks[k] for k in cl]
+            if group[0].frames[i][1].dot(group[-1].frames[i][1]) < max_spread:
+                continue
+            _tile_row(group, i, m)
+
+
+def _tile_row(locks, i, m):
+    ws = [lk.widths[i] for lk in locks]
+    wsum = sum(ws)
+    if wsum <= EPS:
+        return
+    Pc = sum((lk.frames[i][0] * w for lk, w in zip(locks, ws)), Vector()) / wsum
+    T = sum((lk.frames[i][1] for lk in locks), Vector())
+    T = T.normalized() if T.length > EPS else locks[0].frames[i][1]
+    d = sum((lk.frames[i][3] * (-1.0 if lk.rev else 1.0) for lk in locks), Vector())
+    d = d - T * d.dot(T)
+    if d.length < EPS:
+        return
+    d.normalize()
+    xs = [(lk.frames[i][0] - Pc).dot(d) for lk in locks]
+    lo = min(x - w * 0.5 for x, w in zip(xs, ws))
+    hi = max(x + w * 0.5 for x, w in zip(xs, ws))
+    total = max(hi - lo, wsum * 0.5)
+    acc = 0.0
+    for k, lk in enumerate(locks):
+        w_new = total * ws[k] / wsum
+        c = lo + (acc + 0.5 * ws[k]) / wsum * total
+        acc += ws[k]
+        P, Tk, Nk, Bk = lk.frames[i]
+        Pn = Pc + d * c
+        Bn = d * (-1.0 if lk.rev else 1.0)
+        Nn = Bn.cross(Tk)                    # our frames use B = T x N  ->  N = B x T
+        Nn = Nn.normalized() if Nn.length > EPS else Nk
+        if Nn.dot(Nk) < 0.0:
+            Nn = -Nn
+        B2 = Bk.lerp(Bn, m)
+        N2 = Nk.lerp(Nn, m)
+        lk.frames[i] = (P.lerp(Pn, m), Tk,
+                        N2.normalized() if N2.length > EPS else Nk,
+                        B2.normalized() if B2.length > EPS else Bk)
+        lk.widths[i] = lk.widths[i] + (w_new - lk.widths[i]) * m
 
 
 def manual_runs(units, links):
@@ -1784,8 +1923,12 @@ def build_group(spline_samples, center, prm, mirror=False, with_outline=True, li
                         units.append(u)
             if links:
                 runs = manual_runs(units, links)       # manual joins win over auto
-            else:
+            elif prm.connect:
                 runs = [(run, None) for run in cluster_units(units, prm)]
+            elif prm.auto_merge_roots:
+                runs = overlap_runs(units, prm)        # penetrating roots: merge, then branch
+            else:
+                runs = [([u], {}) for u in units]
             aligned = []
             for run, ranges in runs:
                 if ranges is None:
@@ -1825,6 +1968,9 @@ def build_group(spline_samples, center, prm, mirror=False, with_outline=True, li
                             rows.append(u.branch_row)
                             starts.append(0)
                         locks.append(lk)
+                if prm.merge_overlaps and ranges is not None:
+                    # manual joins (and auto-merged roots): lay buried locks side by side
+                    tile_root_overlaps(locks, limits=rows)
                 build_sheet(locks, rows, center, prm, hair, outline, start_rows=starts)
     finally:
         prm.width = base_width
