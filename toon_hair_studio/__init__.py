@@ -137,6 +137,9 @@ class ToonHairLink(bpy.types.PropertyGroup):
     # "embed" attach: the curve is not joined, only its buried part is cut
     # away (generated from t0 on) so its root sinks into the host
     embed: BoolProperty(default=False)
+    # "unify selected": join where the two locks touch (like automatic
+    # unify, but only for this pair) instead of over a fixed range
+    auto: BoolProperty(default=False)
 
 
 class ToonHairSettings(bpy.types.PropertyGroup):
@@ -308,6 +311,12 @@ class ToonHairSettings(bpy.types.PropertyGroup):
                                              "幅の比率で横に並べ直して1つにまとめ、重なりが解けた所から分岐させる")
     auto_merge_roots: BoolProperty(name="重なった根元を自動で結合", default=False, update=_upd,
                                    description="つないでいない房でも、根元が重なっていれば自動でつないでまとめる")
+    unify_scope: EnumProperty(
+        name="一体化する所",
+        items=[('AUTO', "触れ合う所全部", "重なる・触れ合う房は全部1つの体にまとめる"),
+               ('SELECTED', "選んだ所だけ", "「選んだ房を一体化」「選択点をつなぐ」「刺したカーブを結合」で"
+                                       "選んだ房だけをまとめ、ほかの房は独立させる")],
+        default='AUTO', update=_upd)
     unify: BoolProperty(name="全体を一体化", default=True, update=_upd,
                         description="グループ全体を1つのきれいなメッシュにする。触れ合う・重なる房は1つの断面に溶け合い、"
                                     "離れる所できれいな股(2枚の四角形)で分かれる。オフで従来の房ごとの連結")
@@ -706,6 +715,49 @@ class TOONHAIR_OT_link_selected(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class TOONHAIR_OT_unify_selected(bpy.types.Operator):
+    bl_idname = "toon_hair.unify_selected"
+    bl_label = "選んだ房を一体化"
+    bl_description = ("編集モードで点を選んだカーブの房どうしを、触れ合う所で1つの体にまとめます"
+                      "(どの点でもOK)。一体化する所を「選んだ所だけ」に切り替えるので、ほかの房は独立のまま")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return active_group(context) is not None
+
+    def execute(self, context):
+        g = active_group(context)
+        if context.mode == 'EDIT_CURVE':
+            g.update_from_editmode()
+        sel = [i for i, _ts in _selected_splines(g)]
+        if len(sel) < 2:
+            self.report({'WARNING'}, "2本以上のカーブで点を選択してください (編集モード)")
+            return {'CANCELLED'}
+        center = build.center_of(g.toon_hair)
+        mw = g.matrix_world
+
+        def az(idx):
+            smp = core.sample_spline(g.data.splines[idx], mw)
+            return center.head_coord(smp[len(smp) // 2][0])[0]
+        sel.sort(key=az)
+        st = g.toon_hair
+        links = st.links
+        for ia, ib in zip(sel, sel[1:]):
+            for i in range(len(links) - 1, -1, -1):
+                if {links[i].a, links[i].b} == {ia, ib} and not links[i].embed:
+                    links.remove(i)
+            l = links.add()
+            l.a, l.b, l.t0, l.t1, l.auto = ia, ib, 0.0, 1.0, True
+        global _suspend_update
+        _suspend_update = True
+        st.unify, st.unify_scope = True, 'SELECTED'
+        _suspend_update = False
+        build.rebuild(g)
+        self.report({'INFO'}, f"{len(sel)} 本を一体化しました (ほかの房は独立)")
+        return {'FINISHED'}
+
+
 class TOONHAIR_OT_unlink(bpy.types.Operator):
     bl_idname = "toon_hair.unlink"
     bl_label = "つなぎを解除"
@@ -964,6 +1016,10 @@ class TOONHAIR_PT_main(_Panel, bpy.types.Panel):
             row.prop(st, "unify", text="一体化", toggle=True, icon=ic('MESH_DATA'))
             row.prop(st, "connect", text="自動でつなぐ", toggle=True)
             row.prop(st, "mirror_x", toggle=True)
+            if st.unify:
+                col.row(align=True).prop(st, "unify_scope", expand=True)
+            row = col.row(align=True)
+            row.operator("toon_hair.unify_selected", text="選んだ房を一体化", icon=ic('MESH_DATA'))
             row = col.row(align=True)
             row.operator("toon_hair.link_selected", text="選択点をつなぐ", icon=ic('LINKED'))
             row.operator("toon_hair.unlink", text="", icon=ic('UNLINKED')).all = False
@@ -1136,7 +1192,12 @@ class TOONHAIR_PT_connect(_Panel, bpy.types.Panel):
         lay.use_property_decorate = False
         lay.prop(st, "unify")
         if st.unify:
-            lay.label(text="触れ合う房は1つの面に溶け合い、離れる所できれいに分かれます", icon=ic('INFO'))
+            lay.row().prop(st, "unify_scope", expand=True)
+            if st.unify_scope == 'AUTO':
+                lay.label(text="触れ合う房は1つの面に溶け合い、離れる所できれいに分かれます", icon=ic('INFO'))
+            else:
+                lay.label(text="選んだ房・刺したカーブだけをまとめ、ほかは独立", icon=ic('INFO'))
+            lay.operator("toon_hair.unify_selected", icon=ic('MESH_DATA'))
         box = lay.box()
         box.label(text=f"手動でつなぐ ({len(st.links)} か所" + (")" if st.unify else ", 自動より優先)"),
                   icon=ic('LINKED'))
@@ -1268,6 +1329,7 @@ classes = (
     TOONHAIR_OT_add_strand,
     TOONHAIR_OT_sample,
     TOONHAIR_OT_link_selected,
+    TOONHAIR_OT_unify_selected,
     TOONHAIR_OT_unlink,
     TOONHAIR_OT_attach,
     TOONHAIR_OT_check,

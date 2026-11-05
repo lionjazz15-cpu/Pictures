@@ -321,6 +321,11 @@ def test_attach_stray():
     check(any(3 in (l.a, l.b) for l in st.links), "attach: no link for the stray")
     check(islands(st.hair_object.data) == 1, "attach: stray not merged into the sheet")
     analyse(g, st, "attach")
+    # only the stuck curve and its links become one body
+    st.unify_scope = 'SELECTED'
+    check(islands(st.hair_object.data) == 1, "attach: selected-only unify lost the stray join")
+    analyse(g, st, "attach/selected")
+    st.unify_scope = 'AUTO'
     # division sliders switch the LOD to custom
     st.lod = 'MID'
     st.profile_segments = 3
@@ -679,6 +684,29 @@ def test_unify():
         lens = sorted((mw @ me.vertices[e.vertices[0]].co - mw @ me.vertices[e.vertices[1]].co).length
                       for e in me.edges)
         check(lens[len(lens) // 2] > 0.0, "unify: degenerate edges")
+        # only chosen locks: everything independent until picked
+        st.unify_scope = 'SELECTED'
+        build.rebuild(g)
+        check(islands(st.hair_object.data) == 7, f"unify selected: expected 7 free locks, "
+              f"got {islands(st.hair_object.data)}")
+        for i, s_ in enumerate(g.data.splines):
+            for bp in s_.bezier_points:
+                bp.select_control_point = i in (3, 4) and bp == s_.bezier_points[1]
+        for o in bpy.context.selected_objects:
+            o.select_set(False)
+        g.select_set(True)
+        bpy.context.view_layer.objects.active = g
+        res = bpy.ops.toon_hair.unify_selected()
+        check(res == {'FINISHED'} and st.unify_scope == 'SELECTED', "unify_selected failed")
+        check(islands(st.hair_object.data) == 6, f"unify selected: picked pair not merged "
+              f"({islands(st.hair_object.data)} pieces)")
+        analyse(g, st, "unify/selected")
+        J = captured["J"]
+        joined_b = [b for b, row in enumerate(J) if any(row)]
+        check(len(joined_b) == 1, f"unify selected: joins at boundaries {joined_b}, expected one")
+        bpy.ops.toon_hair.unlink(all=True)
+        check(islands(st.hair_object.data) == 7, "unify selected: unlink did not free the pair")
+        st.unify_scope = 'AUTO'
         # off -> the old glued locks still build
         st.unify = False
         build.rebuild(g)

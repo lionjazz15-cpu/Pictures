@@ -417,6 +417,7 @@ class StrandParams:
     connect_style = 'SMOOTH'  # SMOOTH (なめらか) / GROOVE (毛束の溝)
     plane_rows = True         # joined guides share row planes (HairHarpy-style)
     unify = False             # whole group as one body (unify.py) instead of glued locks
+    unify_scope = 'AUTO'      # AUTO: every touching lock / SELECTED: only linked ones
     merge_overlaps = True     # joined locks that overlap from the root are laid side by side there
     auto_merge_roots = False  # also join unjoined locks whose roots overlap
     smooth_iterations = 4

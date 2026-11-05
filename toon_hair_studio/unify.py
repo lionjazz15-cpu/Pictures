@@ -60,7 +60,7 @@ def join_table(locks, rc, prm, force=None):
     """J[b][i]: locks b and b+1 are one body on row i.
 
     force(b, i) -> None (join where they touch / overlap), a float (join while
-    closer than that many half widths) or True (always join)."""
+    closer than that many half widths), True (always join) or False (never)."""
     K = len(locks)
     J = []
     point_tip = prm.tip_mode == 'POINT'
@@ -69,8 +69,8 @@ def join_table(locks, rc, prm, force=None):
         row = []
         for i in range(rc):
             f = force(b, i) if force else None
-            if f is True:
-                row.append(True)
+            if f is True or f is False:
+                row.append(f)
                 continue
             Pa, Ta, Na, _ = la.frames[i]
             Pb, Tb, Nb, _ = lb.frames[i]
@@ -672,7 +672,14 @@ def build_layer(units, center, prm, hair, outline=None, links=None, uid=0):
     link_rng = {}
     for link in links or []:
         a, b, t0, t1 = link[:4]
-        link_rng[frozenset((a, b))] = (t0, t1)
+        auto = len(link) > 5 and bool(link[5])
+        link_rng[frozenset((a, b))] = (t0, t1, auto)
+    selected_only = getattr(prm, "unify_scope", 'AUTO') == 'SELECTED'
+
+    def auto_rule(t):
+        if prm.connect and t <= prm.split:
+            return max(prm.connect_ratio, 1.02)
+        return None
 
     def make_force(seq, locks, owner):
         def force(b, i):
@@ -681,13 +688,14 @@ def build_layer(units, center, prm, hair, outline=None, links=None, uid=0):
             if ua is ub:
                 return True if i <= ua.branch_row else None
             t = 0.5 * (la.ts[i] + lb.ts[i])
-            if ua.mirrored == ub.mirrored:
-                r = link_rng.get(frozenset((ua.src, ub.src)))
-                if r is not None and r[0] - 1e-6 <= t <= r[1] + 1e-6:
-                    return True
-            if prm.connect and t <= prm.split:
-                return max(prm.connect_ratio, 1.02)
-            return None
+            r = link_rng.get(frozenset((ua.src, ub.src))) if ua.mirrored == ub.mirrored else None
+            if r is not None and r[2]:
+                return auto_rule(t)               # unify selected: join where they touch
+            if r is not None and r[0] - 1e-6 <= t <= r[1] + 1e-6:
+                return True
+            if selected_only:
+                return False                      # only chosen pairs become one body
+            return auto_rule(t)
         return force
 
     def rows_of(locks):

@@ -24,7 +24,7 @@ PARAM_KEYS = (
     "bevel", "bend_density", "curl_turns", "curl_radius", "curl_start", "wave_amp", "wave_freq",
     "lift", "puff", "puff_pos", "tip_flip", "roll", "layers", "layer_gap", "layer_shift",
     "layer_front_len", "layer_back_len", "layer_width", "layer_flip",
-    "cut_taper", "cut_enable", "cut_height", "plane_rows", "unify", "merge_overlaps", "auto_merge_roots", "head_follow",
+    "cut_taper", "cut_enable", "cut_height", "plane_rows", "unify", "unify_scope", "merge_overlaps", "auto_merge_roots", "head_follow",
 )
 
 _building = False
@@ -99,7 +99,7 @@ def generate(curve_ob, world=True, with_outline=True):
             continue
         stray = {l.a, l.b} == {l.stray_idx, l.host_idx}
         links.append((remap[l.a], remap[l.b], l.t0, l.t1,
-                      (remap[l.stray_idx], remap[l.host_idx]) if stray else None))
+                      (remap[l.stray_idx], remap[l.host_idx]) if stray else None, l.auto))
         if stray and l.trunk > 0.0:
             trunks[remap[l.stray_idx]] = l.trunk
     hair, outline = core.build_group(samples, center, prm, mirror=st.mirror_x,
