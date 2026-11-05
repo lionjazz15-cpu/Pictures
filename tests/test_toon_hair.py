@@ -35,7 +35,7 @@ def edge_use(me):
     return use
 
 
-def analyse(ob, st, tag):
+def analyse(ob, st, tag, allow_tris=False):
     me = st.hair_object.data
     t_attr = me.attributes["TH_t"].data
     inner = me.attributes["TH_inner"].data
@@ -54,7 +54,7 @@ def analyse(ob, st, tag):
             fan = any(vsizes[v] == {3} for v in p.vertices)
             # end caps without bevel: a triangle lying in one ring (same t)
             ring = len({round(t_attr[v].value, 6) for v in p.vertices}) == 1
-            if not (fan or ring):
+            if not (fan or ring or allow_tris):
                 check(False, f"{tag}: triangle away from tip")
                 break
     # no degenerate faces
@@ -88,7 +88,10 @@ def analyse(ob, st, tag):
         n = (mw.to_3x3() @ p.normal).normalized()
         total += 1
         good += n.dot(center.radial(c)) > -0.2
-    check(total == 0 or good / total > 0.97, f"{tag}: only {good}/{total} outer faces face outward")
+    # only locks that are meant to hug the head must face away from it; plain
+    # curve-like locks (head_follow 0, e.g. an ahoge standing up) may not
+    if st.head_follow >= 0.5:
+        check(total == 0 or good / total > 0.97, f"{tag}: only {good}/{total} outer faces face outward")
     check(me.has_custom_normals == (st.normal_mode == 'VOLUME'), f"{tag}: custom normal state wrong")
     if st.outline:
         om = st.outline_object.data
@@ -195,6 +198,88 @@ class _PanelSelf:
         self.layout = MockLayout()
 
 
+def _stray_scene():
+    from toon_hair_studio import draw
+    center = bpy.data.objects[draw.CENTER_NAME]
+    c = center.matrix_world.to_translation()
+    g = draw.new_group(bpy.context, 'CUSTOM', center)
+    st = g.toon_hair
+    st.width, st.root_ratio, st.bulge_pos = 0.045, 0.5, 0.35
+    inv = g.matrix_world.inverted()
+    root = c + Vector((0.0, -0.04, 0.095))
+    for dx in (-0.032, 0.0, 0.032):
+        pts = [root + Vector((dx * 0.3, 0, 0)), c + Vector((dx * 0.6, -0.088, 0.06)),
+               c + Vector((dx, -0.106, 0.0)), c + Vector((dx * 1.15, -0.11, -0.06)),
+               c + Vector((dx * 1.3, -0.105, -0.12))]
+        draw.add_bezier(g.data, [inv @ p for p in pts])
+    for a_, b_ in ((0, 1), (1, 2)):
+        l = st.links.add()
+        l.a, l.b, l.t0, l.t1 = a_, b_, 0.0, 0.6
+    build.rebuild(g)
+    g["host_verts"] = len(st.hair_object.data.vertices)       # the 3 locks alone
+    stray = [c + Vector((0.004, -0.095, 0.045)), c + Vector((0.01, -0.108, 0.0)),
+             c + Vector((0.03, -0.13, -0.05)), c + Vector((0.06, -0.15, -0.09))]
+    sp = draw.add_bezier(g.data, [inv @ p for p in stray])
+    for bp in sp.bezier_points:
+        bp.radius = 0.4
+    build.rebuild(g)
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    g.select_set(True)
+    bpy.context.view_layer.objects.active = g
+    return g
+
+
+def test_attach_embed():
+    """'Keep as is': shape, UVs and the host stay; the buried part goes."""
+    g = _stray_scene()
+    st = g.toon_hair
+    me = st.hair_object.data
+    host_before = sorted(tuple(round(c_, 5) for c_ in v.co) for v in me.vertices)
+    tip_before = g.matrix_world @ g.data.splines[3].bezier_points[-1].co
+    nf_before = len(me.polygons)
+    res = bpy.ops.toon_hair.attach(mode='EMBED')
+    check(res == {'FINISHED'}, "embed attach failed")
+    me = st.hair_object.data
+    check(len(me.polygons) < nf_before, "embed: buried part was not removed")
+    check(islands(me) == 1, f"embed: curve not connected to its host ({islands(me)} pieces)")
+    analyse(g, st, "attach/embed", allow_tris=True)      # the bridge may need a few triangles
+    after = {tuple(round(c_, 5) for c_ in v.co) for v in me.vertices}
+    # the host is untouched: every vertex that changed belongs to the stray
+    changed = set(host_before) - after
+    stray_before = len(host_before) - g["host_verts"]
+    check(len(changed) <= stray_before, f"embed: host geometry changed ({len(changed)} verts moved)")
+    # the stray's tip is where it was and still maps to v = 1
+    tip_local = st.hair_object.matrix_world.inverted() @ tip_before
+    near = min(me.vertices, key=lambda v: (v.co - tip_local).length)
+    check((near.co - tip_local).length < 1e-3, "embed: stray tip moved")
+    uv = me.uv_layers.active.data
+    vs_at_tip = [uv[li].uv.y for p in me.polygons for li, vi in zip(p.loop_indices, p.vertices) if vi == near.index]
+    check(vs_at_tip and max(vs_at_tip) > 0.99, "embed: stray UV lost its 0..1 range")
+
+
+def test_long_lock_twist():
+    """A long lock hanging to the chest and curling must not twist."""
+    import math
+    from mathutils import Matrix
+    from toon_hair_studio import core
+    c = core.Center(Matrix.Translation((0, 0, 1.5)) @ Matrix.Diagonal((0.1, 0.1, 0.1, 1)))
+    pts = [Vector((0.07, -0.06, 1.56)), Vector((0.1, -0.07, 1.45)), Vector((0.1, -0.06, 1.3)),
+           Vector((0.09, -0.05, 1.15)), Vector((0.07, -0.06, 1.08)), Vector((0.03, -0.08, 1.1)),
+           Vector((0.0, -0.09, 1.14))]
+    smp = []
+    for a_, b_ in zip(pts, pts[1:]):
+        smp += [(a_.lerp(b_, k / 16), 1.0, 0.0) for k in range(16)]
+    smp.append((pts[-1], 1.0, 0.0))
+    for hf in (0.0, 0.6):
+        fr = core.compute_frames(core.resample(smp, 40), c, head_follow=hf)
+        worst = 0.0
+        for (P0, T0, N0, B0), (P1, T1, N1, B1) in zip(fr, fr[1:]):
+            tr = (N0 - T1 * N0.dot(T1)).normalized()
+            worst = max(worst, math.degrees(tr.angle(N1)))
+        check(worst < 10.0, f"long lock twists {worst:.1f} deg per row (head_follow {hf})")
+
+
 def test_attach_stray():
     """A thin curve stuck into a lock attaches as a stray hair / branch."""
     from toon_hair_studio import draw
@@ -225,7 +310,7 @@ def test_attach_stray():
         o.select_set(False)
     g.select_set(True)
     bpy.context.view_layer.objects.active = g
-    res = bpy.ops.toon_hair.attach()
+    res = bpy.ops.toon_hair.attach(mode='BRANCH')
     check(res == {'FINISHED'}, "attach operator failed")
     sp = g.data.splines[3]
     check(len(sp.bezier_points) > n_before, "attach: stray was not extended to the host root")
@@ -609,6 +694,8 @@ def test_new_features():
     test_ui_draw()
     test_buried_lock()
     test_attach_stray()
+    test_attach_embed()
+    test_long_lock_twist()
 
     # density layout puts more loops at bends and tips
     prm = core.StrandParams(length_segments=12, tip_bias=0.5, bend_density=1.0)

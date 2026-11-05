@@ -130,6 +130,13 @@ class ToonHairLink(bpy.types.PropertyGroup):
     b: IntProperty()
     t0: FloatProperty(min=0.0, max=1.0)
     t1: FloatProperty(min=0.0, max=1.0)
+    # set by "attach": this link holds a curve stuck into a lock
+    stray_idx: IntProperty(default=-1)
+    host_idx: IntProperty(default=-1)
+    trunk: FloatProperty(default=0.0, min=0.0, max=1.0)
+    # "embed" attach: the curve is not joined, only its buried part is cut
+    # away (generated from t0 on) so its root sinks into the host
+    embed: BoolProperty(default=False)
 
 
 class ToonHairSettings(bpy.types.PropertyGroup):
@@ -242,6 +249,9 @@ class ToonHairSettings(bpy.types.PropertyGroup):
                             description="+で外ハネ、-で内巻き (頭の半径比)")
     lift: FloatProperty(name="浮かせる", default=0.0, soft_min=-0.2, soft_max=0.5, update=_upd,
                         description="グループ全体を頭から浮かせる量 (頭の半径比)。層を前後に重ねる時に")
+    head_follow: FloatProperty(name="頭に沿わせる強さ", default=0.0, min=0.0, max=1.0, update=_upd,
+                               description="0 = 普通のカーブのように、根元の向きからねじれ最小で流れる。"
+                                           "1 = 頭の丸みに沿って表を外へ向け続ける")
     roll: FloatProperty(name="向き(立てる)", default=0.0, subtype='ANGLE', soft_min=-math.pi, soft_max=math.pi,
                         update=_upd, description="房を中心線のまわりに回して立てる (ひさし前髪・跳ね毛)")
     curl_turns: FloatProperty(name="カール回数", default=0.0, min=0.0, soft_max=8.0, update=_upd,
@@ -602,7 +612,7 @@ class TOONHAIR_OT_sample(bpy.types.Operator):
         # all guides grow from one crown whorl with thin roots, so the locks
         # fan out like an umbrella and tile the head without overlapping
         whorl = _head_dir(180, 72)
-        thin = dict(root_ratio=0.12, bulge_pos=0.55, connect=True, connect_ratio=2.2)
+        thin = dict(root_ratio=0.12, bulge_pos=0.55, connect=True, connect_ratio=2.2, head_follow=0.6)
 
         # 前髪: 5本のガイド、それぞれ2〜3本に分岐 + 横連結
         bangs = [_whorl_strand(center, whorl, az, -2 + abs(az) * 0.3, 1.13, n=6)
@@ -730,6 +740,12 @@ class TOONHAIR_OT_attach(bpy.types.Operator):
                       "編集モードで点を選んだカーブが対象 (選んでいなければ細い毛を自動で探す)")
     bl_options = {'REGISTER', 'UNDO'}
 
+    mode: EnumProperty(
+        name="結合のしかた",
+        items=[('EMBED', "そのまま埋め込む", "形もUVもそのまま。埋もれた部分だけ取り除き、根元を親の房の中に沈める"),
+               ('BRANCH', "根元から合流", "親の房に沿って根元まで延長し、親と1枚につないで抜け出す所から分岐させる")],
+        default='EMBED')
+
     @classmethod
     def poll(cls, context):
         g = active_group(context)
@@ -748,7 +764,7 @@ class TOONHAIR_OT_attach(bpy.types.Operator):
                 rad = sum(p.radius for p in pts) / max(len(pts), 1)
                 if rad < 0.75 and i not in linked:
                     targets.append(i)
-        done = build.attach_curves(g, targets) if targets else []
+        done = build.attach_curves(g, targets, mode=self.mode) if targets else []
         build.rebuild(g)
         if was_edit:
             bpy.ops.object.mode_set(mode='EDIT')
@@ -1014,6 +1030,7 @@ class TOONHAIR_PT_shape(_Panel, bpy.types.Panel):
         sub.active = st.cut_enable
         sub.prop(st, "cut_height")
         col = lay.column(align=True)
+        col.prop(st, "head_follow")
         col.prop(st, "twist")
         col.prop(st, "root_extend")
         if st.backface == 'CLOSED':

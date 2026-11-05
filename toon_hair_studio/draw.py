@@ -289,7 +289,7 @@ class TOONHAIR_OT_draw(bpy.types.Operator):
             # Shift+drag: a thin stray hair, attached to the lock it starts in
             for bp in sp.bezier_points:
                 bp.radius = 0.4
-            build.attach_curves(g, [idx])
+            build.attach_curves(g, [idx], mode='EMBED')
         build.rebuild(g)
 
     def _delete_near(self, context, event):

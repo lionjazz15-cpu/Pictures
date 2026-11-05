@@ -24,7 +24,7 @@ PARAM_KEYS = (
     "bevel", "bend_density", "curl_turns", "curl_radius", "curl_start", "wave_amp", "wave_freq",
     "lift", "puff", "puff_pos", "tip_flip", "roll", "layers", "layer_gap", "layer_shift",
     "layer_front_len", "layer_back_len", "layer_width", "layer_flip",
-    "cut_taper", "cut_enable", "cut_height", "plane_rows", "merge_overlaps", "auto_merge_roots",
+    "cut_taper", "cut_enable", "cut_height", "plane_rows", "merge_overlaps", "auto_merge_roots", "head_follow",
 )
 
 _building = False
@@ -88,10 +88,23 @@ def generate(curve_ob, world=True, with_outline=True):
     keep = [i for i, smp in enumerate(raw) if len(smp) >= 2]
     remap = {old: new for new, old in enumerate(keep)}
     samples = [raw[i] for i in keep]
-    links = [(remap[l.a], remap[l.b], l.t0, l.t1) for l in st.links
-             if l.a in remap and l.b in remap and l.a != l.b]
+    links, trunks, starts, hosts = [], {}, {}, {}
+    for l in st.links:
+        if l.a not in remap or l.b not in remap or l.a == l.b:
+            continue
+        if l.embed:
+            if l.stray_idx in remap and l.host_idx in remap:
+                starts[remap[l.stray_idx]] = l.t0
+                hosts[remap[l.stray_idx]] = remap[l.host_idx]
+            continue
+        stray = {l.a, l.b} == {l.stray_idx, l.host_idx}
+        links.append((remap[l.a], remap[l.b], l.t0, l.t1,
+                      (remap[l.stray_idx], remap[l.host_idx]) if stray else None))
+        if stray and l.trunk > 0.0:
+            trunks[remap[l.stray_idx]] = l.trunk
     hair, outline = core.build_group(samples, center, prm, mirror=st.mirror_x,
-                                     with_outline=with_outline, links=links)
+                                     with_outline=with_outline, links=links, trunks=trunks,
+                                     embed_starts=starts, embed_hosts=hosts)
     if st.weld_dist > 0.0:
         core.weld_geo(hair, st.weld_dist)
     if not world:
@@ -323,6 +336,10 @@ def on_spline_removed(curve_ob, idx):
             l.a -= 1
         if l.b > idx:
             l.b -= 1
+        if l.stray_idx > idx:
+            l.stray_idx -= 1
+        if l.host_idx > idx:
+            l.host_idx -= 1
 
 
 # --------------------------------------------------------------------------
@@ -367,7 +384,65 @@ def _unit_width(u, t):
     return sum(lk.widths[min(i, len(lk.widths) - 1)] for lk in u.locks)
 
 
-def attach_curves(curve_ob, targets):
+def _embed_curve(curve_ob, s_idx, units):
+    """'Keep as is' attach: find the lock the curve is stuck in and where it
+    comes out; the curve is then generated from just before that point, so
+    the buried part disappears and the root sinks into the host. Shape and
+    UVs of both stay exactly as they were."""
+    su = units[s_idx]
+    if su is None:
+        return None
+    root = su.path[0][0]
+    ws = _unit_width(su, 0.05)
+    best = None
+    for h_idx, hu in enumerate(units):
+        if hu is None or h_idx == s_idx:
+            continue
+        dist, th, _ph = _nearest_on_path(hu.path, root)
+        wh = _unit_width(hu, th)
+        if dist <= 0.5 * (wh + ws) * 1.1:
+            score = dist / max(wh, 1e-6)
+            if best is None or score < best[0]:
+                best = (score, h_idx)
+    if best is None:
+        return None
+    h_idx = best[1]
+    hu = units[h_idx]
+    t_out = None
+    for q, t in su.path:
+        dist, th2, _p = _nearest_on_path(hu.path, q)
+        # out of the host once the curve's centre is past the host's surface
+        # by a little: the root ring then still sits inside the host
+        if dist > 0.5 * _unit_width(hu, th2):
+            t_out = t
+            break
+    if t_out is None or t_out <= 0.02:
+        return None
+    start = max(0.0, t_out - 0.04)
+    links = curve_ob.toon_hair.links
+    for i in range(len(links) - 1, -1, -1):
+        if links[i].embed and links[i].stray_idx == s_idx:
+            links.remove(i)
+    l = links.add()
+    l.a, l.b = min(s_idx, h_idx), max(s_idx, h_idx)
+    l.t0, l.t1, l.embed = start, start, True
+    l.stray_idx, l.host_idx = s_idx, h_idx
+    return h_idx
+
+
+def attach_curves(curve_ob, targets, mode='BRANCH'):
+    if mode == 'EMBED':
+        units, _c = _units_of(curve_ob)
+        done = []
+        for s_idx in targets:
+            h = _embed_curve(curve_ob, s_idx, units)
+            if h is not None:
+                done.append((s_idx, h))
+        return done
+    return _attach_branch(curve_ob, targets)
+
+
+def _attach_branch(curve_ob, targets):
     """Attach guides stuck into a lock: extend each one back along its host
     to the host's root (so they share the trunk) and join it to the host
     from the root to where it comes out. Returns list of (target, host)."""
@@ -397,6 +472,7 @@ def attach_curves(curve_ob, targets):
         _score, h_idx, th, ph, wh = best
         hu = units[h_idx]
         sp = splines[s_idx]
+        orig_root = root.copy()
         # 1) extend back along the host to its root (shared trunk)
         if th > 0.06 and sp.type == 'BEZIER':
             off = root - ph
@@ -426,6 +502,7 @@ def attach_curves(curve_ob, targets):
         # 2) where does it come out of the host?
         units2, _c = _units_of(curve_ob)
         su, hu = units2[s_idx], units2[h_idx]
+        trunk = _nearest_on_path(su.path, orig_root)[1] if th > 0.06 else 0.0
         t_out = 0.8
         inside_seen = False
         for q, t in su.path:
@@ -442,9 +519,11 @@ def attach_curves(curve_ob, targets):
         links = curve_ob.toon_hair.links
         partners = {h_idx}
         linked = {}
+        band = {}
         for l in links:
             linked.setdefault(l.a, set()).add(l.b)
             linked.setdefault(l.b, set()).add(l.a)
+            band[frozenset((l.a, l.b))] = l.t1
         if h_idx in linked:
             az = {i: center.head_coord(u.mid)[0] for i, u in enumerate(units2) if u is not None}
             comp, stack = set(), [h_idx]
@@ -464,7 +543,14 @@ def attach_curves(curve_ob, targets):
                 if {links[i].a, links[i].b} == {s_idx, nb}:
                     links.remove(i)
             l = links.add()
-            l.a, l.b, l.t0, l.t1 = min(s_idx, nb), max(s_idx, nb), 0.0, t_end
+            l.a, l.b, l.t0 = min(s_idx, nb), max(s_idx, nb), 0.0
+            if nb == h_idx:
+                l.t1 = t_end
+                l.stray_idx, l.host_idx, l.trunk = s_idx, h_idx, trunk
+            else:
+                # neighbour on the other side: keep it joined where it was
+                # joined to the host, but not past the point the curve leaves
+                l.t1 = min(t_end, band.get(frozenset((h_idx, nb)), t_end))
         done.append((s_idx, h_idx))
     return done
 

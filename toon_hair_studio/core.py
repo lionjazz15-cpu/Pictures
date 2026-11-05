@@ -178,8 +178,14 @@ def resample(samples, segments, tip_bias=0.0):
     return out
 
 
-def compute_frames(points, center, twist=0.0, tilt_sign=1.0, smooth_passes=2, roll=0.0):
-    """Head-oriented frames -> list of (P, T, N, B)."""
+def compute_frames(points, center, twist=0.0, tilt_sign=1.0, smooth_passes=2, roll=0.0,
+                   head_follow=0.0):
+    """Frames along a guide -> list of (P, T, N, B).
+
+    The root faces away from the head; from there the frame is carried along
+    the curve with minimal twist, like a Blender curve with 'Minimum' twist.
+    head_follow (0..1) pulls the outward direction back towards the head
+    where the lock runs over it (1 = hug the head)."""
     P = [p[0] for p in points]
     n = len(P)
     T = []
@@ -194,19 +200,36 @@ def compute_frames(points, center, twist=0.0, tilt_sign=1.0, smooth_passes=2, ro
             d = T[-1].copy() if T else Vector((0.0, 0.0, -1.0))
         T.append(d.normalized())
 
+    # Outward direction: near the head it follows the head (radial direction
+    # projected off the tangent). Where that becomes unreliable - the lock
+    # runs along the radial direction (hanging straight down below the head)
+    # or is far from the head (long locks, curls at chest level) - the frame
+    # is parallel-transported instead (rotation minimising), so long locks
+    # keep the orientation they left the head with and never flip / twist.
     N = []
     prev = None
     for i in range(n):
         r = center.radial(P[i])
         v = r - T[i] * r.dot(T[i])
-        if v.length < 1e-4:
-            if prev is not None:
-                v = prev - T[i] * prev.dot(T[i])
-            if v.length < 1e-4:
-                v = T[i].orthogonal()
-        v.normalize()
-        N.append(v)
-        prev = v
+        vl = v.length
+        dist = (center.inv @ P[i]).length          # 1 = on the head surface
+        w = head_follow * smoothstep(0.15, 0.5, vl) * (1.0 - smoothstep(1.6, 2.6, dist))
+        if prev is None:
+            if vl > 1e-4:
+                cur = v / vl
+            else:
+                cur = T[i].orthogonal().normalized()
+        else:
+            tr = prev - T[i] * prev.dot(T[i])
+            tr = tr.normalized() if tr.length > 1e-6 else (v / vl if vl > 1e-4 else T[i].orthogonal().normalized())
+            if vl > 1e-4 and w > 0.0:
+                cur = tr * (1.0 - w) + (v / vl) * w
+                cur = cur - T[i] * cur.dot(T[i])
+                cur = cur.normalized() if cur.length > 1e-6 else tr
+            else:
+                cur = tr
+        N.append(cur)
+        prev = cur
 
     for _ in range(smooth_passes):
         sm = []
@@ -405,6 +428,7 @@ class StrandParams:
     puff_pos = 0.6
     tip_flip = 0.0            # >0 flicks tips outward, <0 tucks them in
     roll = 0.0                # stand the locks up (rotate around the guide)
+    head_follow = 0.0         # 0 = plain curve (minimal twist), 1 = hug the head
     layers = 'NONE'           # NONE / FRONT / BACK / BOTH
     layer_gap = 0.08
     layer_shift = 0.5         # lateral stagger, fraction of the lock width
@@ -445,7 +469,7 @@ def _azimuth_rev(center, P, B, w):
 
 class Lock:
     """One pointed lock: rings of frames + widths + arc params."""
-    __slots__ = ("frames", "widths", "ts", "rev", "unit", "sub", "nsub")
+    __slots__ = ("frames", "widths", "ts", "rev", "unit", "sub", "nsub", "uvmap", "trunk", "prof_span")
 
     def __init__(self, frames, widths, ts, rev):
         self.frames = frames
@@ -455,6 +479,9 @@ class Lock:
         self.unit = 0       # id of the guide (Unit) this lock grew from
         self.sub = 0        # index among its branch siblings (order space)
         self.nsub = 1
+        self.uvmap = None   # per row (o0, o1, v, rev) UV override, see build_sheet
+        self.trunk = 0.0    # attached curve: param where the original curve starts
+        self.prof_span = None  # per row (x_lo, x_hi, W, m): part of a shared cross-section
 
 
 class Unit:
@@ -596,7 +623,7 @@ def deform_samples(samples, center, prm, tilt_sign=1.0, n=160, layer=None):
         return samples
     tmax = min(max(length, 0.05), 1.0)
     pts = [(*_eval_at(samples, lengths, total, tmax * i / n), i / n) for i in range(n + 1)]
-    frames = compute_frames(pts, center, twist=0.0, tilt_sign=tilt_sign)
+    frames = compute_frames(pts, center, twist=0.0, tilt_sign=tilt_sign, head_follow=prm.head_follow)
     W = prm.width
     R = center.radius
     s0 = min(max(prm.curl_start, 0.0), 0.95)
@@ -622,7 +649,8 @@ def deform_samples(samples, center, prm, tilt_sign=1.0, n=160, layer=None):
     return out
 
 
-def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=None, align=None):
+def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=None, align=None,
+              trunk=0.0):
     """Build the lock(s) of one guide.
 
     align: optional row params for rows 0..m (from plane_align) so that the
@@ -655,7 +683,21 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=N
     if segs < 4:
         nb = 1
 
+    embed_start = min(max(-(trunk or 0.0), 0.0), 0.95)
+    trunk = min(max(trunk or 0.0, 0.0), 0.9)
+    if embed_start > 0.0:
+        # only the visible part is generated: keep the original row spacing
+        segs = max(3, int(round(segs * (1.0 - embed_start))))
+
     def parent_w(t, rad):
+        # an attached curve keeps its own silhouette: the width profile runs
+        # over the original curve only (from `trunk`); the trunk part that
+        # was added inside the host keeps the root width. An embedded curve
+        # (generated from embed_start on) maps back to the original param.
+        if trunk > 0.0:
+            t = max(0.0, (t - trunk) / (1.0 - trunk))
+        elif embed_start > 0.0:
+            t = embed_start + t * (1.0 - embed_start)
         return prm.width * width_factor(t, prm.root_ratio, prm.bulge_pos, prm.tip_shape, tip_min,
                                         cut) * max(rad, 0.0)
 
@@ -707,12 +749,16 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=N
     if nb == 1:
         tl = row_ts(1.0)
         pts = [(*_eval_at(samples, lengths, total, t), t) for t in tl]
-        frames = compute_frames(pts, center, twist=prm.twist, tilt_sign=tilt_sign, roll=prm.roll)
+        frames = compute_frames(pts, center, twist=prm.twist, tilt_sign=tilt_sign, roll=prm.roll,
+                                head_follow=prm.head_follow)
         widths = [parent_w(p[3], p[1]) for p in pts]
         P, _T, _N, B = frames[len(frames) // 3]
         lk = Lock(frames, widths, tl, _azimuth_rev(center, P, B, widths[len(frames) // 3]))
         im = len(frames) // 2
         Pm = frames[im][0]
+        lk.trunk = trunk
+        if embed_start > 0.0:
+            lk.uvmap = [(0.0, 1.0, embed_start + t * (1.0 - embed_start), lk.rev) for t in tl]
         u = Unit([lk], Pm, center.head_coord(Pm)[0], widths[im], order, -1)
         u.path, u.length = path, total
         return u
@@ -721,7 +767,8 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=N
     # parent frames on a fine grid, interpolated at any t
     fine = 64
     fpts = [(*_eval_at(samples, lengths, total, i / fine), i / fine) for i in range(fine + 1)]
-    fframes = compute_frames(fpts, center, twist=prm.twist, tilt_sign=tilt_sign, roll=prm.roll)
+    fframes = compute_frames(fpts, center, twist=prm.twist, tilt_sign=tilt_sign, roll=prm.roll,
+                             head_follow=prm.head_follow)
 
     def frame_at(t):
         f = min(max(t, 0.0), 1.0) * fine
@@ -770,12 +817,16 @@ def make_unit(samples, center, prm, mirrored=False, order=0.0, rng=None, layer=N
             pts.append((P + B * off, rad, tilt, t))
             widths.append(w)
         frames = compute_frames(pts, center, twist=prm.twist, tilt_sign=tilt_sign, smooth_passes=1,
+                                head_follow=prm.head_follow,
                                 roll=prm.roll)
         locks.append(Lock(frames, widths, tl, rev))
     if rev:
         locks.reverse()
     for idx, lk in enumerate(locks):
         lk.sub, lk.nsub = idx, len(locks)
+        lk.trunk = trunk
+        if embed_start > 0.0:
+            lk.uvmap = [(0.0, 1.0, embed_start + t * (1.0 - embed_start), lk.rev) for t in lk.ts]
     Pm, _Bm, radm, _ = frame_at(0.5)
     u = Unit(locks, Pm, center.head_coord(Pm)[0], parent_w(0.5, radm), order, n_pre)
     u.path, u.length = path, total
@@ -925,7 +976,7 @@ def overlap_runs(units, prm, root_rows=3):
                         sep_row = i
                         break
                 end_row = min(sep_row + 1, rc - 2)
-                ranges[len(cur) - 1] = (0.0, 0.5 * (la.ts[end_row] + lb.ts[end_row]))
+                ranges[len(cur) - 1] = (0.0, 0.5 * (la.ts[end_row] + lb.ts[end_row]), None)
                 cur.append(u)
                 continue
             runs.append((cur, ranges))
@@ -985,6 +1036,54 @@ def tile_root_overlaps(locks, transition=2, max_spread=0.7, limits=None):
             _tile_row(group, i, m)
 
 
+def attach_pair(left, right, r1, stray_right, transition=2):
+    """Host + attached curve: inside the join band the curve becomes a strip
+    within the host's own span (host silhouette unchanged, neighbours
+    untouched); UVs: host keeps its 0..1 range over its full width and the
+    strip continues the host's UV, after the band the curve has its own UV
+    over the original curve (trunk mapping)."""
+    host, stray = (left, right) if stray_right else (right, left)
+    rc = min(len(left.frames), len(right.frames))
+    for i in range(min(rc, max(r1, 0) + 1 + transition)):
+        m = 1.0 if i <= r1 else 1.0 - (i - r1) / (transition + 1)
+        m = m * m * (3.0 - 2.0 * m)
+        _tile_row([left, right], i, m)
+    nr_h, nr_s = len(host.ts), len(stray.ts)
+    host.prof_span = [None] * nr_h
+    stray.prof_span = [None] * nr_s
+    for i in range(min(rc, max(r1, 0) + 1 + transition)):
+        m = 1.0 if i <= r1 else 1.0 - (i - r1) / (transition + 1)
+        m = m * m * (3.0 - 2.0 * m)
+        wh, ws = host.widths[i], stray.widths[i]
+        if wh + ws <= EPS:
+            continue
+        f = 2.0 * ws / (wh + ws)
+        if stray_right:
+            host.prof_span[i] = (-1.0, 1.0 - f, wh + ws, m)
+            stray.prof_span[i] = (1.0 - f, 1.0, wh + ws, m)
+        else:
+            stray.prof_span[i] = (-1.0, -1.0 + f, wh + ws, m)
+            host.prof_span[i] = (-1.0 + f, 1.0, wh + ws, m)
+    host.uvmap = [None] * nr_h
+    stray.uvmap = [None] * nr_s
+    tr = stray.trunk
+    for i in range(nr_s):
+        if i <= r1 and i < nr_h:
+            wh, ws = host.widths[i], stray.widths[i]
+            f = ws / (wh + ws) if wh + ws > EPS else 0.0
+            v = host.ts[i]
+            if stray_right:
+                host.uvmap[i] = (0.0, 1.0 - f, v, host.rev)
+                stray.uvmap[i] = (1.0 - f, 1.0, v, host.rev)
+            else:
+                host.uvmap[i] = (f, 1.0, v, host.rev)
+                stray.uvmap[i] = (0.0, f, v, host.rev)
+        else:
+            t = stray.ts[i]
+            v = max(0.0, (t - tr) / (1.0 - tr)) if tr > 0.0 else t
+            stray.uvmap[i] = (0.0, 1.0, v, stray.rev)
+
+
 def _tile_row(locks, i, m):
     ws = [lk.widths[i] for lk in locks]
     wsum = sum(ws)
@@ -1036,12 +1135,14 @@ def manual_runs(units, links):
             x = parent[x]
         return x
     pair_range = {}
-    for a, b, t0, t1 in links:
+    for link in links:
+        a, b, t0, t1 = link[:4]
+        kind = link[4] if len(link) > 4 else None     # (stray spline, host spline) or None
         for mir in (False, True):
             ia, ib = by_key.get((a, mir)), by_key.get((b, mir))
             if ia is None or ib is None or ia == ib:
                 continue
-            pair_range[frozenset((ia, ib))] = (t0, t1)
+            pair_range[frozenset((ia, ib))] = (t0, t1, kind)
             parent[find(ia)] = find(ib)
     comps = {}
     for idx in range(len(units)):
@@ -1275,6 +1376,12 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
 
     for i in range(rc):
         wk = [(eR[k][i] - eL[k][i]).length for k in range(K)]
+        # width the cross-section is actually built on (a host + attached
+        # curve share one wider section), so neighbours match at the seam
+        eff = []
+        for k in range(K):
+            ps_ = locks[k].prof_span[i] if locks[k].prof_span is not None and i < len(locks[k].prof_span) else None
+            eff.append(wk[k] + (ps_[2] - wk[k]) * ps_[3] if ps_ is not None else wk[k])
         Wu = {u: sum(wk[k] for k in ks) for u, ks in unit_locks.items()}
         for k, lk in enumerate(locks):
             P, _T, Nk, _B = lk.frames[i]
@@ -1287,8 +1394,8 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
             lat_r = bw(k, i) if k < K - 1 and not same_unit[k] else 0.0
             ulat_l = bw(kf - 1, i) if kf > 0 else 0.0
             ulat_r = bw(kl, i) if kl < K - 1 else 0.0
-            wnb_l = wk[k - 1] if k > 0 else wk[k]
-            wnb_r = wk[k + 1] if k < K - 1 else wk[k]
+            wnb_l = eff[k - 1] if k > 0 else wk[k]
+            wnb_r = eff[k + 1] if k < K - 1 else wk[k]
             Wnb_l = Wu[locks[kf - 1].unit] if kf > 0 else Wu[lk.unit]
             Wnb_r = Wu[locks[kl + 1].unit] if kl < K - 1 else Wu[lk.unit]
             # branch join weights -> blend own profile with the unit profile
@@ -1328,6 +1435,16 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
                 wbv = bl + (br - bl) * (x + 1.0) * 0.5
                 ym = my_o + (my_u - my_o) * wbv
                 ye = he_o + (he_u - he_o) * wbv
+                ps = lk.prof_span[i] if lk.prof_span is not None and i < len(lk.prof_span) else None
+                if ps is not None:
+                    # host + attached curve share one cross-section here
+                    x_lo, x_hi, Wun, mb = ps
+                    xs_ = x_lo + (x_hi - x_lo) * (x + 1.0) * 0.5
+                    my_s, he_s = prof(xs_, Wun, wnb_l, wnb_r,
+                                      lat_l if x_lo <= -0.999 else 0.0,
+                                      lat_r if x_hi >= 0.999 else 0.0)
+                    ym += (my_s - ym) * mb
+                    ye += (he_s - ye) * mb
                 if bevel and closed_edge(k, i, c):
                     # bevel: the outer edge keeps a small side band
                     ye = half_t * prm.bevel * wk[k]
@@ -1358,6 +1475,16 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
 
     band_faces = []
 
+    def uv_col(lk, i, c):
+        """UV of order column c on row i (uvmap override or the default)."""
+        m = lk.uvmap[i] if lk.uvmap is not None and i < len(lk.uvmap) else None
+        if m is None:
+            o0, o1, v, rv = 0.0, 1.0, lk.ts[i], lk.rev
+        else:
+            o0, o1, v, rv = m
+        o = o0 + (o1 - o0) * c / S
+        return ((1.0 - o) if rv else o, v)
+
     def cap_strip(k, i):
         """Close a ring with a strip of quads between its front and back rows
         (triangles where front and back share an edge vertex)."""
@@ -1383,36 +1510,37 @@ def build_sheet(locks, split_rows, center, prm, hair, outline=None, start_rows=N
         us = [j / S for j in range(S + 1)]
         ts = lk.ts
         for i in range(rc - 1):
-            v0, v1 = ts[i], ts[i + 1]
             for j in range(S):
                 ca, cb = cols[j], cols[j + 1]
-                ua, ub = us[j], us[j + 1]
+                a0, b0 = uv_col(lk, i, ca), uv_col(lk, i, cb)
+                a1, b1 = uv_col(lk, i + 1, ca), uv_col(lk, i + 1, cb)
                 g.add_face((V('F', k, i, ca), V('F', k, i, cb), V('F', k, i + 1, cb), V('F', k, i + 1, ca)),
-                           ((ua, v0), (ub, v0), (ub, v1), (ua, v1)), 'F')
+                           (a0, b0, b1, a1), 'F')
                 if closed:
                     g.add_face((V('B', k, i, cb), V('B', k, i, ca), V('B', k, i + 1, ca), V('B', k, i + 1, cb)),
-                               ((ub, v0), (ua, v0), (ua, v1), (ub, v1)), 'B')
+                               (b0, a0, a1, b1), 'B')
             if bevel:
                 # bevel band along each outer (not joined) edge
-                for c, u in ((0, 0.0), (S, 1.0)):
+                for c in (0, S):
                     if closed_edge(k, i, c) and closed_edge(k, i + 1, c):
                         f = [V('F', k, i, c), V('F', k, i + 1, c), V('B', k, i + 1, c), V('B', k, i, c)]
+                        p0, p1 = uv_col(lk, i, c), uv_col(lk, i + 1, c)
                         band_faces.append(len(g.faces))
-                        g.add_face(f, [(u, v0), (u, v1), (u, v1), (u, v0)])
+                        g.add_face(f, [p0, p1, p1, p0])
         i = rc - 1
-        vt = ts[i]
-        loop = [(V('F', k, i, cols[j]), us[j], 'F') for j in range(S + 1)]
+        loop = [(V('F', k, i, cols[j]), uv_col(lk, i, cols[j]), 'F') for j in range(S + 1)]
         if closed:
             back = range(S, -1, -1) if bevel else range(S - 1, 0, -1)
-            loop += [(V('B', k, i, cols[j]), us[j], 'B') for j in back]
+            loop += [(V('B', k, i, cols[j]), uv_col(lk, i, cols[j]), 'B') for j in back]
         if point_tip:
             tip = index[('T', k)]
+            ut = uv_col(lk, min(nr - 1, len(ts) - 1), S * 0.5)
             span = len(loop) if closed else len(loop) - 1
             for j in range(span):
                 a, ua, sa = loop[j]
                 b, ub, sb = loop[(j + 1) % len(loop)]
                 kind = 'F' if sa == sb == 'F' else ('B' if sa == sb == 'B' else 'S')
-                g.add_face((a, b, tip), ((ua, vt), (ub, vt), (0.5, ts[nr - 1])), kind)
+                g.add_face((a, b, tip), (ua, ub, ut), kind)
         elif closed:
             band_faces.extend(cap_strip(k, i))
 
@@ -1884,7 +2012,128 @@ def layer_defs(prm):
     return defs
 
 
-def build_group(spline_samples, center, prm, mirror=False, with_outline=True, links=None):
+def _zip_loops(g, A, B):
+    """Bridge two closed vertex loops with quads (triangles where their
+    vertex counts differ), matching them by arc-length fraction."""
+    n, m = len(A), len(B)
+    j0 = min(range(m), key=lambda j: (g.verts[B[j]] - g.verts[A[0]]).length)
+    B = B[j0:] + B[:j0]
+    if (g.verts[B[1]] - g.verts[A[1]]).length > (g.verts[B[-1]] - g.verts[A[1]]).length:
+        B = [B[0]] + B[1:][::-1]
+
+    def params(L):
+        d = [0.0]
+        for k in range(1, len(L) + 1):
+            d.append(d[-1] + (g.verts[L[k % len(L)]] - g.verts[L[k - 1]]).length)
+        tot = d[-1] or 1.0
+        return [x / tot for x in d]
+    pa, pb = params(A), params(B)
+    faces = []
+    i = j = 0
+    tol = 0.5 * min(1.0 / n, 1.0 / m)
+    while i < n or j < m:
+        a0, a1 = A[i % n], A[(i + 1) % n]
+        b0, b1 = B[j % m], B[(j + 1) % m]
+        na = pa[i + 1] if i < n else 2.0
+        nb = pb[j + 1] if j < m else 2.0
+        if i < n and j < m and abs(na - nb) < tol:
+            faces.append((a0, a1, b1, b0))
+            i += 1
+            j += 1
+        elif na <= nb:
+            faces.append((a0, a1, b0))
+            i += 1
+        else:
+            faces.append((a0, b1, b0))
+            j += 1
+    return faces
+
+
+def bridge_embedded(g, pieces, hosts):
+    """Connect embedded curves to their host: open a small hole in the host's
+    front surface right over the curve's root ring and bridge the hole to
+    the ring. Host and curve keep their shape and UVs; only the few host
+    faces over the root are replaced by the bridge."""
+    remove = set()
+    adds = []
+    for srcs, mir, li, v0, v1, f0, f1 in pieces:
+        if len(srcs) != 1:
+            continue
+        s_src = next(iter(srcs))
+        h_src = hosts.get(s_src)
+        if h_src is None:
+            continue
+        hp = [p for p in pieces if h_src in p[0] and p[1] == mir and p[2] == li]
+        if not hp:
+            continue
+        _hs, _hm, _hl, hv0, hv1, hf0, hf1 = hp[0]
+        loops = _boundary_loops(g.faces[f0:f1])
+        if not loops:
+            continue
+        ring = min(loops, key=lambda L: sum(g.t[q] for q in L) / len(L))
+        C = sum((g.verts[q] for q in ring), Vector()) / len(ring)
+        rr = sum((g.verts[q] - C).length for q in ring) / len(ring)
+
+        def cen(fi):
+            f = g.faces[fi]
+            return sum((g.verts[q] for q in f), Vector()) / len(f)
+        front = [fi for fi in range(hf0, hf1) if g.face_kind[fi] == 'F' and fi not in remove]
+        if not front:
+            continue
+        patch = [fi for fi in front if (cen(fi) - C).length <= rr * 1.1]
+        if not patch:
+            patch = [min(front, key=lambda fi: (cen(fi) - C).length)]
+        holes = _boundary_loops([g.faces[fi] for fi in patch])
+        if len(holes) != 1:
+            continue
+        hole = holes[0]
+        # don't cut through the host's own border (sheet edge / notch)
+        host_edges = {}
+        for fi in range(hf0, hf1):
+            f = g.faces[fi]
+            for a in range(len(f)):
+                u, v = f[a], f[(a + 1) % len(f)]
+                k = (u, v) if u < v else (v, u)
+                host_edges[k] = host_edges.get(k, 0) + 1
+        if any(host_edges.get((min(u, v), max(u, v)), 0) < 2
+               for u, v in zip(hole, hole[1:] + hole[:1])):
+            continue
+        remove.update(patch)
+        adds += _zip_loops(g, hole, ring)
+    if not remove:
+        return 0
+    uv_of = {}
+    for f, uv in zip(g.faces, g.face_uv):
+        for q, u in zip(f, uv):
+            uv_of.setdefault(q, u)
+    keep = [i for i in range(len(g.faces)) if i not in remove]
+    g.faces = [g.faces[i] for i in keep]
+    g.face_uv = [g.face_uv[i] for i in keep]
+    g.face_kind = [g.face_kind[i] for i in keep]
+    g.face_mat = [g.face_mat[i] for i in keep]
+    for f in adds:
+        g.add_face(f, [uv_of.get(q, (0.5, 0.0)) for q in f], 'S')
+    orient_consistent(g)
+    return len(adds)
+
+
+def trim_samples(samples, start):
+    """The part of a guide from arc param `start` to its end."""
+    if start <= 0.0 or len(samples) < 2:
+        return samples
+    lengths, total = _arc(samples)
+    if total < 1e-9:
+        return samples
+    n = max(8, len(samples))
+    out = []
+    for k in range(n + 1):
+        t = start + (1.0 - start) * k / n
+        out.append(_eval_at(samples, lengths, total, t))
+    return out
+
+
+def build_group(spline_samples, center, prm, mirror=False, with_outline=True, links=None, trunks=None,
+                embed_starts=None, embed_hosts=None):
     """spline_samples: list of sample lists -> (hair Geo, outline Geo|None).
 
     Each layer (middle / back / front) is built from the same guides and
@@ -1898,6 +2147,7 @@ def build_group(spline_samples, center, prm, mirror=False, with_outline=True, li
     outline = Geo() if (with_outline and prm.outline) else None
     base_width = prm.width
     uid = 0
+    pieces = []      # (srcs, mirrored, layer, v0, v1, f0, f1) of every sheet
     try:
         for li, (side, length, wscale, flip) in enumerate(layer_defs(prm)):
             prm.width = base_width * wscale
@@ -1908,14 +2158,22 @@ def build_group(spline_samples, center, prm, mirror=False, with_outline=True, li
                 variants = [(smp, False, float(n))]
                 if mirror:
                     variants.append(([(center.mirror(p), r, t) for p, r, t in smp], True, n + 0.5))
+                trunk = (trunks or {}).get(n, 0.0)
+                start = (embed_starts or {}).get(n, 0.0)
+                if start > 0.0:
+                    # embedded curve: generate only the visible part, but keep
+                    # its silhouette and UVs in the original curve's terms
+                    variants = [(trim_samples(vs, start), mir, od) for vs, mir, od in variants]
+                    trunk = -start
                 for vs, mirrored, order in variants:
-                    u = make_unit(vs, center, prm, mirrored, order, random.Random(seed), layer=layer)
+                    u = make_unit(vs, center, prm, mirrored, order, random.Random(seed), layer=layer,
+                                  trunk=trunk)
                     if u:
                         u.src, u.mirrored = n, mirrored
 
-                        def remake(al, vs=vs, mirrored=mirrored, order=order, seed=seed, n=n):
+                        def remake(al, vs=vs, mirrored=mirrored, order=order, seed=seed, n=n, trunk=trunk):
                             nu = make_unit(vs, center, prm, mirrored, order, random.Random(seed),
-                                           layer=layer, align=al)
+                                           layer=layer, align=al, trunk=trunk)
                             if nu is not None:
                                 nu.src, nu.mirrored = n, mirrored
                             return nu
@@ -1947,6 +2205,7 @@ def build_group(spline_samples, center, prm, mirror=False, with_outline=True, li
                     uid += 1
             for run, ranges, ref_side in aligned:
                 locks, rows, starts = [], [], []
+                strays = {}            # boundary -> True if the stray is the right-hand lock
                 for ui, u in enumerate(run):
                     if locks:
                         rc = len(u.locks[0].frames) - (1 if prm.tip_mode == 'POINT' else 0)
@@ -1959,8 +2218,10 @@ def build_group(spline_samples, center, prm, mirror=False, with_outline=True, li
                             rows.append(_lateral_row(a, bl, prm.split, rc))
                             starts.append(0)
                         else:
-                            t0, t1 = ranges[ui - 1]
+                            t0, t1, kind = ranges[ui - 1]
                             r0, r1 = _band_rows(a, bl, t0, t1, rc)
+                            if kind is not None:
+                                strays[len(rows)] = (u.src == kind[0])
                             rows.append(r1)
                             starts.append(r0)
                     for j, lk in enumerate(u.locks):
@@ -1968,10 +2229,21 @@ def build_group(spline_samples, center, prm, mirror=False, with_outline=True, li
                             rows.append(u.branch_row)
                             starts.append(0)
                         locks.append(lk)
+                for b, stray_right in strays.items():
+                    attach_pair(locks[b], locks[b + 1], rows[b], stray_right)
                 if prm.merge_overlaps and ranges is not None:
                     # manual joins (and auto-merged roots): lay buried locks side by side
-                    tile_root_overlaps(locks, limits=rows)
+                    stray_locks = {id(locks[b + 1] if right else locks[b]) for b, right in strays.items()}
+                    lim = [(-1 if (b in strays or id(locks[b]) in stray_locks
+                                   or id(locks[b + 1]) in stray_locks) else r)
+                           for b, r in enumerate(rows)]
+                    tile_root_overlaps(locks, limits=lim)
+                pv0, pf0 = len(hair.verts), len(hair.faces)
                 build_sheet(locks, rows, center, prm, hair, outline, start_rows=starts)
+                pieces.append(({u.src for u in run}, run[0].mirrored, li,
+                               pv0, len(hair.verts), pf0, len(hair.faces)))
     finally:
         prm.width = base_width
+    if embed_hosts and prm.backface == 'CLOSED':
+        bridge_embedded(hair, pieces, embed_hosts)
     return hair, outline

@@ -50,13 +50,14 @@ def main():
     rp.OUT = out
     sc, cam, c, g = make_scene()
     files = []
+    mode = os.environ.get("TH_ATTACH_MODE", "EMBED")
     for stage in ("before", "after"):
         if stage == "after":
             for o in bpy.context.selected_objects:
                 o.select_set(False)
             g.select_set(True)
             bpy.context.view_layer.objects.active = g
-            print("attach:", bpy.ops.toon_hair.attach(), "links", len(g.toon_hair.links))
+            print("attach:", bpy.ops.toon_hair.attach(mode=mode), "links", len(g.toon_hair.links))
         for topo in (False, True):
             rp.topology_mode(topo)
             cam.location = c + Vector((0.12, -0.6, 0.02))
